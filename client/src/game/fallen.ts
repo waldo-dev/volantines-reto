@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { groundHeight, stepKite, type KiteDesign, type KiteState, type Loadout, type V3 } from '@volantines/shared';
-import type { KiteView } from '../entities/kiteView';
+import { createKite, groundHeight, stepKite, type KiteDef, type KiteDesign, type KiteState, type Loadout, type NetFallen, type V3 } from '@volantines/shared';
+import { KiteView } from '../entities/kiteView';
 import type { Flyer } from './flyer';
 
 /** A qué distancia (horizontal) se alcanza a recoger un volantín caído. */
@@ -9,6 +9,10 @@ export const CAPTURE_RADIUS = 2.4;
 const LIFETIME_ON_GROUND = 90;
 
 export interface FallenKite {
+  id: string;
+  /** En modo online la posición la manda el servidor (no se simula aquí). */
+  remote: boolean;
+  target: V3 | null;
   kite: KiteState;
   view: KiteView;
   design: KiteDesign;
@@ -27,16 +31,58 @@ beamGeo.translate(0, 20, 0);
 export class FallenKites {
   readonly list: FallenKite[] = [];
 
+  private nextId = 1;
+
   constructor(private scene: THREE.Scene) {}
 
-  add(from: Flyer, detached: { kite: KiteState; view: KiteView }) {
+  private beam() {
     const beam = new THREE.Mesh(
       beamGeo,
       new THREE.MeshBasicMaterial({ color: '#ffd84a', transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }),
     );
     beam.renderOrder = 5;
     this.scene.add(beam);
+    return beam;
+  }
+
+  /** Volantín caído que avisa el servidor (modo online). */
+  addNet(msg: { id: string; owner: string; ownerName: string; design: KiteDesign; p: [number, number, number]; h: number }, def: KiteDef, lo: Loadout) {
+    const kite = createKite({ x: msg.p[0], y: msg.p[1], z: msg.p[2] }, 1, 0);
+    kite.pos = { x: msg.p[0], y: msg.p[1], z: msg.p[2] };
+    kite.heading = msg.h;
+    kite.broken = true;
+    const view = new KiteView(def, msg.design, this.scene, true);
+    view.resetTail(kite.pos);
+    this.list.push({ id: msg.id, remote: true, target: { ...kite.pos }, kite, view, design: msg.design, lo, owner: msg.owner, ownerName: msg.ownerName, groundTime: 0, beam: this.beam() });
+  }
+
+  /** Posiciones que manda el servidor en cada snapshot. */
+  syncNet(list: NetFallen[]) {
+    for (const n of list) {
+      const f = this.list.find((x) => x.id === n.id);
+      if (!f) continue;
+      f.target = { x: n.p[0], y: n.p[1], z: n.p[2] };
+      f.kite.heading = n.h;
+      f.kite.grounded = n.g === 1;
+    }
+  }
+
+  removeById(id: string) {
+    const f = this.list.find((x) => x.id === id);
+    if (f) this.remove(f);
+    return f ?? null;
+  }
+
+  clear() {
+    for (const f of [...this.list]) this.remove(f);
+  }
+
+  add(from: Flyer, detached: { kite: KiteState; view: KiteView }) {
+    const beam = this.beam();
     this.list.push({
+      id: `local-${this.nextId++}`,
+      remote: false,
+      target: null,
       kite: detached.kite,
       view: detached.view,
       design: from.design,
@@ -51,6 +97,16 @@ export class FallenKites {
   step(dt: number, windAt: (alt: number) => V3) {
     for (const f of this.list) {
       const k = f.kite;
+      if (f.remote) {
+        // Se acerca suave a la posición que mandó el servidor
+        if (f.target) {
+          const a = Math.min(1, dt * 8);
+          k.pos.x += (f.target.x - k.pos.x) * a;
+          k.pos.y += (f.target.y - k.pos.y) * a;
+          k.pos.z += (f.target.z - k.pos.z) * a;
+        }
+        continue;
+      }
       const alt = k.pos.y - groundHeight(k.pos.x, k.pos.z);
       stepKite(k, f.lo, NO_INPUT, k.pos, k.vel, windAt(alt), dt);
       if (k.grounded) f.groundTime += dt;

@@ -5,10 +5,7 @@ import { assetUrl } from './assets';
 export { PATTERNS, DEFAULT_DESIGN, type KiteDesign } from '@volantines/shared';
 export { SPECIAL_DESIGNS as SPECIALS } from '@volantines/shared';
 
-export const COLOR_SWATCHES = [
-  '#d52b1e', '#ffffff', '#0039a6', '#f2c14e', '#2e9e5b', '#f07f2e',
-  '#8e44ad', '#ff6fa8', '#1b1b1b', '#57c7e3', '#7a4b2a', '#c9e265',
-];
+export { COLOR_SWATCHES } from '@volantines/shared';
 
 export const isSpecial = isSpecialDesign;
 

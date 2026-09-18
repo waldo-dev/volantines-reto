@@ -5,7 +5,13 @@ import { COLOR_SWATCHES, PATTERNS, SPECIALS, drawDesign, isSpecial, type KiteDes
 import { CHARACTERS, GLASSES, HATS, type Look } from '../profile';
 import type { Session } from '../session';
 
-type Tab = 'cuenta' | 'personaje' | 'volantin' | 'equipo';
+type Tab = 'jugar' | 'cuenta' | 'personaje' | 'volantin' | 'equipo';
+
+export interface NetControls {
+  /** null = modo solo; '' = partida rápida; 'NUEVA' = sala privada; otro = código de sala. */
+  play: (room: string | null) => Promise<void>;
+  status: () => { room: string; isPrivate: boolean; players: string[] } | null;
+}
 export type MenuChange = 'look' | 'design' | 'gear' | 'name' | 'account';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -24,8 +30,9 @@ export class Menu {
     private session: Session,
     private onChange: (what: MenuChange) => void,
     private onClose: () => void,
+    private net: NetControls,
   ) {
-    this.tab = session.isGuest ? 'cuenta' : 'personaje';
+    this.tab = 'jugar';
     this.el = document.createElement('div');
     this.el.id = 'menu';
     this.el.hidden = true;
@@ -37,6 +44,7 @@ export class Menu {
           <button class="play">¡A encumbrar!</button>
         </header>
         <nav>
+          <button data-tab="jugar">Jugar</button>
           <button data-tab="cuenta">Cuenta</button>
           <button data-tab="personaje">Personaje</button>
           <button data-tab="volantin">Volantín</button>
@@ -103,9 +111,12 @@ export class Menu {
     this.el.querySelector('.menu-wallet')!.innerHTML = `<span>Nivel <b>${lvl.level}</b></span><span>🪙 <b>${s.data.coins}</b></span>`;
     this.el.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === this.tab));
     this.el.querySelector<HTMLCanvasElement>('.char-preview')!.hidden = this.tab === 'volantin';
+    this.el.querySelector<HTMLElement>('.menu-preview')!.hidden = this.tab === 'jugar';
+    this.el.querySelector<HTMLElement>('.menu-body')!.classList.toggle('single', this.tab === 'jugar');
     this.kiteCanvas.hidden = this.tab !== 'volantin';
     this.body.innerHTML = '';
-    if (this.tab === 'cuenta') this.renderAccount();
+    if (this.tab === 'jugar') this.renderPlay();
+    else if (this.tab === 'cuenta') this.renderAccount();
     else if (this.tab === 'personaje') this.renderCharacter();
     else if (this.tab === 'volantin') this.renderKite();
     else this.renderGear();
@@ -194,6 +205,77 @@ export class Menu {
   }
 
   // --- Pestañas ---
+
+  private busy = false;
+
+  private async play(room: string | null, closeAfter = true) {
+    if (this.busy) return;
+    this.busy = true;
+    this.setStatus(room === null ? 'Volviendo al modo solo…' : 'Conectando…');
+    try {
+      await this.net.play(room);
+      this.status = '';
+      if (closeAfter) this.close();
+      else this.render();
+    } catch (e) {
+      this.setStatus((e as Error).message);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private renderPlay() {
+    const st = this.net.status();
+    if (st) {
+      const box = document.createElement('section');
+      box.innerHTML = `
+        <h3>Estás en la sala <span class="room-code">${esc(st.room)}</span></h3>
+        <p class="hint">${st.isPrivate ? 'Sala privada: comparte este código con tus amigos para que entren.' : 'Sala pública de partida rápida.'}</p>
+        <ul class="stat-list">${st.players.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`;
+      this.body.appendChild(box);
+      const copy = document.createElement('button');
+      copy.className = 'opt';
+      copy.textContent = 'Copiar código';
+      copy.addEventListener('click', () => {
+        void navigator.clipboard?.writeText(st.room);
+        this.setStatus('Código copiado.');
+      });
+      const leave = document.createElement('button');
+      leave.className = 'opt';
+      leave.textContent = 'Salir de la sala (jugar solo)';
+      leave.addEventListener('click', () => void this.play(null, false));
+      const row = document.createElement('div');
+      row.className = 'opts';
+      row.append(copy, leave);
+      this.body.appendChild(row);
+      return;
+    }
+
+    const modes = this.section('¿Cómo quieres jugar?');
+    modes.classList.add('play-modes');
+    const card = (title: string, text: string, onClick: () => void) => {
+      const b = document.createElement('button');
+      b.className = 'opt play-card';
+      b.innerHTML = `<b>${title}</b><small>${text}</small>`;
+      b.addEventListener('click', onClick);
+      modes.appendChild(b);
+    };
+    card('🪁 Solo con bots', 'Practica contra Pancho, La Rucia y compañía.', () => this.close());
+    card('🌐 Partida rápida', 'Entra a una sala con otros jugadores online.', () => void this.play(''));
+    card('🔒 Crear sala privada', 'Te damos un código para invitar a tus amigos.', () => void this.play('NUEVA'));
+
+    const join = this.section('Unirse con código', 'Pídele el código de 5 letras a quien creó la sala.');
+    const form = document.createElement('form');
+    form.className = 'name-form';
+    form.innerHTML = `<input maxlength="5" placeholder="ABCDE" style="text-transform:uppercase" /><button class="opt">Entrar</button>`;
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const code = form.querySelector('input')!.value.trim().toUpperCase();
+      if (!/^[A-Z]{5}$/.test(code)) return this.setStatus('El código son 5 letras.');
+      void this.play(code);
+    });
+    join.appendChild(form);
+  }
 
   private renderAccount() {
     const s = this.session;

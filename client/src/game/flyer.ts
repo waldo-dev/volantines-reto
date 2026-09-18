@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 import {
   Rope,
+  applyNetKite,
   createKite,
+  decodeRope,
+  encodeKite,
+  encodeRope,
   groundHeight,
   stepKite,
   type BotBrain,
@@ -11,6 +15,7 @@ import {
   type LineBody,
   type Loadout,
   type Look,
+  type NetState,
   type V3,
 } from '@volantines/shared';
 import { Character } from '../entities/character';
@@ -57,6 +62,8 @@ export class Flyer {
   brain: BotBrain | null = null;
   home: V3;
   botState: 'volar' | 'perseguir' | 'volver' | 'esperar' = 'esperar';
+  /** Número de volantín (sube con cada encumbre); en red distingue un volantín nuevo de uno cortado. */
+  fid = 0;
   botTimer = 1 + Math.random() * 2;
   private threadAccel: V3 = { x: 0, y: -9.8, z: 0 };
 
@@ -125,6 +132,53 @@ export class Flyer {
     this.thread.line.visible = true;
     this.lastDamager = null;
     this.flightTime = 0;
+    this.fid++;
+  }
+
+  /** Estado para mandar al servidor (modo online). */
+  netState(): NetState {
+    const s: NetState = {
+      p: [Math.round(this.pos.x * 100) / 100, Math.round(this.pos.y * 100) / 100, Math.round(this.pos.z * 100) / 100],
+      v: [Math.round(this.vel.x * 100) / 100, Math.round(this.vel.z * 100) / 100],
+      f: Math.round(this.facing * 100) / 100,
+      fid: this.fid,
+    };
+    if (this.kite && !this.kite.broken) {
+      s.k = encodeKite(this.kite);
+      if (!this.kite.stowed) s.rope = encodeRope(this.rope.pts);
+    }
+    return s;
+  }
+
+  /** Aplica el estado (interpolado) de otro jugador que llega por red. */
+  applyNet(s: NetState) {
+    this.pos.x = s.p[0];
+    this.pos.y = s.p[1];
+    this.pos.z = s.p[2];
+    this.vel.x = s.v[0];
+    this.vel.z = s.v[1];
+    this.facing = s.f;
+    if (s.k) {
+      if (!this.kite || s.fid !== this.fid) {
+        this.view?.dispose();
+        this.kite = createKite(this.anchor, 1, 0);
+        this.view = new KiteView(this.loadout.kite, this.design, this.scene, true);
+        this.fid = s.fid;
+        applyNetKite(this.kite, s.k);
+        this.view.resetTail(this.kite.pos);
+      }
+      applyNetKite(this.kite, s.k);
+      if (s.rope) decodeRope(s.rope, this.rope.pts);
+    } else if (this.kite) {
+      this.view?.dispose();
+      this.view = null;
+      this.kite = null;
+    }
+  }
+
+  dispose() {
+    this.view?.dispose();
+    this.scene.remove(this.character.group, this.tag.sprite, this.thread.line);
   }
 
   /** Suelta el volantín cortado para que caiga solo; el personaje queda libre. */

@@ -61,6 +61,11 @@ export const PATTERNS = [
   { id: 'rayos', nombre: 'Rayos' },
 ] as const;
 
+export const COLOR_SWATCHES = [
+  '#d52b1e', '#ffffff', '#0039a6', '#f2c14e', '#2e9e5b', '#f07f2e',
+  '#8e44ad', '#ff6fa8', '#1b1b1b', '#57c7e3', '#7a4b2a', '#c9e265',
+];
+
 export const DEFAULT_LOOK: Look = { character: 'male-a', hat: 'jockey', hatColor: '#d52b1e', glasses: 'none' };
 export const DEFAULT_DESIGN: KiteDesign = { pattern: 'cuartos', colors: ['#d52b1e', '#ffffff', '#0039a6'], tail: '#d52b1e' };
 export const DEFAULT_GEAR: Gear = { kite: 'mediano', line: 'algodon', reel: 'mano', bridle: 'normal' };

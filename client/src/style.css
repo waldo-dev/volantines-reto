@@ -852,3 +852,38 @@ body {
   border-color: #e0b44a;
   background: #fff8e6;
 }
+
+/* --- Jugar online --- */
+.room-chip {
+  position: absolute;
+  top: 88px;
+  right: 12px;
+  font-size: 13px;
+}
+
+.menu-body.single {
+  grid-template-columns: 1fr;
+}
+
+.play-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.play-card {
+  align-items: flex-start;
+  text-align: left;
+  padding: 14px 16px;
+  max-width: none;
+}
+
+.play-card b {
+  font-size: 17px;
+}
+
+.room-code {
+  font-family: ui-monospace, monospace;
+  font-size: 22px;
+  letter-spacing: 0.15em;
+  color: #0039a6;
+}

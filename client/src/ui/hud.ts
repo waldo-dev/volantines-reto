@@ -45,6 +45,7 @@ export class Hud {
         <div class="integrity" hidden><span class="label" data-cross>Cruzado</span><div class="bar"><div class="int-fill"></div></div></div>
       </div>
       <div class="panel wind"><div class="vane"><div class="arrow">↑</div></div><div><span class="label">Viento</span><b data-wind>0</b> km/h</div></div>
+      <div class="panel room-chip" hidden></div>
       <div class="panel fallen" hidden><span class="fallen-arrow">↑</span> Volantín caído a <b data-fdist>0</b> m</div>
       <button class="panel launch-btn" hidden>🪁 Encumbrar</button>
       <div class="panel message" hidden><div data-msg></div><button data-action></button></div>
@@ -59,6 +60,13 @@ export class Hud {
     this.$('[data-action]').addEventListener('click', () => this.onAction?.());
     this.$('.menu-btn').addEventListener('click', () => this.onMenu?.());
     this.$('.launch-btn').addEventListener('click', () => this.onLaunch?.());
+  }
+
+  /** Indicador de sala online (null en modo solo). */
+  setRoom(text: string | null) {
+    const el = this.$('.room-chip');
+    el.hidden = !text;
+    el.textContent = text ? `🌐 ${text}` : '';
   }
 
   setTouch(isTouch: boolean) {

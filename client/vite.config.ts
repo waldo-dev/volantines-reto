@@ -7,6 +7,9 @@ export default defineConfig({
   },
   server: {
     // En desarrollo la API corre aparte (npm run dev:server)
-    proxy: { '/api': 'http://localhost:8787' },
+    proxy: {
+      '/api': 'http://localhost:8787',
+      '/ws': { target: 'ws://localhost:8787', ws: true },
+    },
   },
 });

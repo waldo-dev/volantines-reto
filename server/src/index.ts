@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CATALOG } from '@volantines/shared';
 import { createSession, deleteSession, hashPassword, playerFromToken, validName, validPassword, verifyPassword } from './auth';
 import { migrate, pool } from './db';
+import { attachWebSockets, lobby } from './ws';
 import {
   HttpError,
   achievementList,
@@ -33,7 +34,7 @@ const needPlayer = (id: number | null): number => {
 const failedLogins = new Map<string, { count: number; until: number }>();
 
 const routes: Record<string, Handler> = {
-  'GET /api/health': async () => ({ ok: true }),
+  'GET /api/health': async () => ({ ok: true, ...lobby.stats }),
 
   'GET /api/catalog': async () => ({ items: CATALOG, achievements: achievementList() }),
 
@@ -171,4 +172,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 await migrate();
+attachWebSockets(server);
 server.listen(PORT, () => console.log(`servidor volantines-reto en http://localhost:${PORT}`));
