@@ -34,6 +34,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 3000);
 const world = createWorld(scene, { shadows: !isMobile, mobile: isMobile });
 if (import.meta.env.DEV) Object.assign(window, { __game: { renderer, scene, camera } });
+const rig = new CameraRig(camera);
 
 let rotateDismissed = false;
 const rotateEl = document.getElementById('rotate')!;
@@ -48,6 +49,17 @@ const input = new Input(canvas, document.getElementById('touch')!);
 const hud = new Hud(document.getElementById('hud')!);
 hud.setTouch(input.isTouch);
 
+/** Evita que el volantín quede tapado por los paneles del HUD (tensión, viento, etc.) al ir muy alto. */
+function updateHudMargin() {
+  let maxBottom = 0;
+  for (const sel of ['.player-card', '.stats', '.tension', '.wind']) {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (el) maxBottom = Math.max(maxBottom, el.getBoundingClientRect().bottom);
+  }
+  const fraction = Math.min(0.4, maxBottom / window.innerHeight);
+  rig.topMargin = THREE.MathUtils.degToRad(camera.fov) * fraction;
+}
+
 function resize() {
   // Tamaño real del canvas en pantalla: en el celular la barra del navegador cambia el alto visible
   const w = canvas.clientWidth || window.innerWidth;
@@ -57,6 +69,7 @@ function resize() {
   camera.updateProjectionMatrix();
   if (input.isTouch && h > w && !rotateDismissed) rotateEl.hidden = false;
   if (w > h) rotateEl.hidden = true;
+  updateHudMargin();
 }
 window.addEventListener('resize', resize);
 window.visualViewport?.addEventListener('resize', resize);
@@ -104,7 +117,6 @@ const remotes = new Map<string, Flyer>();
 let sendTimer = 0;
 const fallen = new FallenKites(scene);
 const sparks = new Sparks(scene);
-const rig = new CameraRig(camera);
 
 let time = 0;
 let stepCount = 0;

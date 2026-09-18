@@ -10,6 +10,8 @@ const lerpAngle = (a: number, b: number, t: number) => {
 export class CameraRig {
   yaw = 0;
   zoom = 0.35; // 0 = cerca del personaje, 1 = vista del volantín
+  /** Franja reservada arriba de la pantalla (HUD de tensión/viento), en radianes. */
+  topMargin = 0;
   readonly forward = new THREE.Vector3(1, 0, 0);
   readonly right = new THREE.Vector3(0, 0, 1);
   private target = new THREE.Vector3();
@@ -70,7 +72,13 @@ export class CameraRig {
     const lx = this.look.x - cam.x;
     const lz = this.look.z - cam.z;
     const lh = Math.max(0.01, Math.hypot(lx, lz));
-    const pitch = Math.min(Math.atan2(this.look.y - cam.y, lh), charPitch + halfFov * 0.72);
+    let pitch = Math.min(Math.atan2(this.look.y - cam.y, lh), charPitch + halfFov * 0.72);
+    // Si el volantín va muy alto, sube la mira lo necesario para que no quede tapado por el HUD.
+    const khx = kite.x - cam.x;
+    const khz = kite.z - cam.z;
+    const kh = Math.max(0.01, Math.hypot(khx, khz));
+    const kitePitch = Math.atan2(kite.y - cam.y, kh);
+    pitch = Math.max(pitch, kitePitch - (halfFov - this.topMargin));
     this.aim.set(cam.x + lx, cam.y + Math.tan(pitch) * lh, cam.z + lz);
     this.camera.lookAt(this.aim);
   }
