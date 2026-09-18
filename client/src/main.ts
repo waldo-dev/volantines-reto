@@ -49,8 +49,9 @@ const hud = new Hud(document.getElementById('hud')!);
 hud.setTouch(input.isTouch);
 
 function resize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  // Tamaño real del canvas en pantalla: en el celular la barra del navegador cambia el alto visible
+  const w = canvas.clientWidth || window.innerWidth;
+  const h = canvas.clientHeight || window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
@@ -58,7 +59,21 @@ function resize() {
   if (w > h) rotateEl.hidden = true;
 }
 window.addEventListener('resize', resize);
+window.visualViewport?.addEventListener('resize', resize);
+// Al girar el teléfono el tamaño final llega un poco después
+window.addEventListener('orientationchange', () => setTimeout(resize, 300));
 resize();
+
+/** Pantalla completa y horizontal en celulares (Android; en iPhone se usa "Agregar a inicio"). */
+function goFullscreen() {
+  if (!input.isTouch || !document.fullscreenEnabled || document.fullscreenElement) return;
+  document.documentElement
+    .requestFullscreen({ navigationUI: 'hide' })
+    .then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape'))
+    .catch(() => undefined);
+}
+hud.onFullscreen = goFullscreen;
+document.addEventListener('fullscreenchange', () => setTimeout(resize, 200));
 
 // --- Jugadores: tú y los bots ---
 const ropePoints = isMobile ? 14 : 18;
@@ -206,6 +221,7 @@ const menu = new Menu(
   },
   () => {
     input.enabled = true;
+    goFullscreen();
     hud.toast(
       input.isTouch
         ? 'Mantén SOLTAR para darle hilo. TIRA cuando la punta apunte hacia arriba.'
@@ -480,7 +496,8 @@ function frame(now: number) {
   for (const f of flyers) f.render(dt, time, windFor(f.altitude));
   fallen.render(dt, time, windFor);
   sparks.update(dt);
-  rig.update(dt, player.pos, player.flying ? player.kite!.pos : null, input.consumeZoom(), player.flying ? 0 : input.state.dirX);
+  const turn = input.consumeTurn(dt);
+  rig.update(dt, player.pos, player.flying ? player.kite!.pos : null, input.consumeZoom(), player.flying ? 0 : turn);
   world.update(dt, wind, player.pos, time);
 
   reportTimer -= dt;

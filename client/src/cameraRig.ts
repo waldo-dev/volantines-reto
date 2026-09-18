@@ -25,13 +25,13 @@ export class CameraRig {
   }
 
   /**
-   * Con `kite` la cámara mira hacia el volantín; sin él (a pie) la gira el jugador con `turn` (-1..1)
+   * Con `kite` la cámara mira hacia el volantín; sin él (a pie) la gira el jugador `turn` radianes
    * y mira hacia adelante.
    */
   update(dt: number, player: V3, kite: V3 | null, zoomDelta: number, turn = 0, instant = false) {
     this.zoom = clamp(this.zoom + zoomDelta, 0, 1);
     if (!kite) {
-      this.yaw += turn * dt * 2.2;
+      this.yaw += turn;
       this.freeLook.set(player.x + Math.cos(this.yaw) * 12, player.y + 1.5, player.z + Math.sin(this.yaw) * 12);
       kite = this.freeLook;
     }

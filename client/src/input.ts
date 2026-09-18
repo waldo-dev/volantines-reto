@@ -29,6 +29,8 @@ export class Input {
   private mouseSoltar = false;
   private mouseDirX = 0;
   private zoomDelta = 0;
+  /** Movimiento horizontal del mouse acumulado (px), para girar la cámara a pie. */
+  private mouseDX = 0;
   private resetRequested = false;
   private debugRequested = false;
   private menuRequested = false;
@@ -63,6 +65,7 @@ export class Input {
     });
     window.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'mouse') return;
+      this.mouseDX += e.movementX;
       const x = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouseDirX = Math.abs(x) < 0.08 ? 0 : clamp((x - Math.sign(x) * 0.08) / 0.7, -1, 1);
     });
@@ -88,6 +91,14 @@ export class Input {
     const z = this.zoomDelta;
     this.zoomDelta = 0;
     return z;
+  }
+
+  /** Cuánto girar la cámara a pie (rad): con mouse sigue el movimiento, en táctil el arrastre. */
+  consumeTurn(dt: number): number {
+    const dx = this.mouseDX;
+    this.mouseDX = 0;
+    if (!this.enabled) return 0;
+    return this.isTouch ? this.touch.dirX * dt * 2.2 : dx * 0.005 + ((this.keys.has('KeyE') ? 1 : 0) - (this.keys.has('KeyQ') ? 1 : 0)) * dt * 2.2;
   }
 
   consumeReset(): boolean {

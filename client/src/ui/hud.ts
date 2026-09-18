@@ -39,6 +39,7 @@ export class Hud {
         <div><span class="label">Hilo</span><b data-len>0</b> / <span data-max>80</span> m</div>
       </div>
       <button class="panel menu-btn">🎨 Personalizar</button>
+      <button class="panel fs-btn" hidden title="Pantalla completa">⛶</button>
       <div class="panel tension">
         <span class="label">Tensión del hilo</span><div class="bar"><div class="fill"></div></div>
         <div class="wear" hidden><span class="label">Desgaste</span><div class="bar"><div class="wear-fill"></div></div></div>
@@ -60,7 +61,10 @@ export class Hud {
     this.$('[data-action]').addEventListener('click', () => this.onAction?.());
     this.$('.menu-btn').addEventListener('click', () => this.onMenu?.());
     this.$('.launch-btn').addEventListener('click', () => this.onLaunch?.());
+    this.$('.fs-btn').addEventListener('click', () => this.onFullscreen?.());
   }
+
+  onFullscreen: (() => void) | null = null;
 
   /** Indicador de sala online (null en modo solo). */
   setRoom(text: string | null) {
@@ -71,6 +75,7 @@ export class Hud {
 
   setTouch(isTouch: boolean) {
     this.$('.help').hidden = isTouch;
+    this.$('.fs-btn').hidden = !isTouch || !document.fullscreenEnabled || !!document.fullscreenElement;
   }
 
   setPlayer(p: HudPlayer) {
