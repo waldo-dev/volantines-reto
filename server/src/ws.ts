@@ -1,6 +1,6 @@
 import type http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { ClientMsg, ServerMsg } from '@volantines/shared';
+import { isMapId, type ClientMsg, type ServerMsg } from '@volantines/shared';
 import { playerFromToken } from './auth';
 import { pool } from './db';
 import { loadPlayer } from './players';
@@ -42,7 +42,7 @@ export function attachWebSockets(server: http.Server) {
       if (msg.t === 'join') {
         if (room || joining) return;
         joining = true;
-        const found = lobby.find(String(msg.room ?? ''));
+        const found = lobby.find(String(msg.room ?? ''), isMapId(msg.map) ? msg.map : 'cerro');
         if (typeof found === 'string') {
           joining = false;
           return reply(ws, { t: 'error', msg: found });

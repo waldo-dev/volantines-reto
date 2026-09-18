@@ -12,6 +12,12 @@ export interface BotBrain {
   modeTimer: number;
   target: string | null;
   inContact: boolean;
+  /** Estaba cruzado el paso anterior (para reaccionar justo al empezar un cruce). */
+  wasContact: boolean;
+  /** s que le quedan dando cuerda rápido (largada). */
+  rapidLeft: number;
+  /** Ya decidió si pega el tirón al acercarse a este cruce (uno por intento). */
+  triedTiron: boolean;
 }
 
 export function createBrain(rand: () => number, skill = 0.5): BotBrain {
@@ -25,6 +31,9 @@ export function createBrain(rand: () => number, skill = 0.5): BotBrain {
     modeTimer: 0,
     target: null,
     inContact: false,
+    wasContact: false,
+    rapidLeft: 0,
+    triedTiron: false,
   };
 }
 
@@ -66,6 +75,7 @@ export function botThink(b: BotBrain, self: BotView, rivals: BotView[], windDir:
       if (alive.length && rand() < b.aggression) {
         b.mode = 'atacar';
         b.target = alive[Math.floor(rand() * alive.length)].id;
+        b.triedTiron = false;
       }
     }
   } else {
@@ -85,6 +95,14 @@ export function botThink(b: BotBrain, self: BotView, rivals: BotView[], windDir:
       const handGap = (rival.anchor.x - self.anchor.x) * sideX + (rival.anchor.z - self.anchor.z) * sideZ;
       const gap = theirs + Math.sign(handGap || 1) * 5 - mine;
       if (!b.inContact) steer = clamp(steer + clamp(gap / 12, -0.8, 0.8), -1, 1);
+      // A punto de cruzarse: a veces un tirón seco hacia el hilo rival (si le sale a tiempo, es crítico)
+      if (!b.inContact && Math.abs(gap) < 4 && !b.triedTiron) {
+        b.triedTiron = true;
+        if (rand() < b.skill * 0.45) {
+          input.tiron = true;
+          steer = Math.sign(gap) || steer;
+        }
+      }
       // Quedar un poco más arriba que el rival da ventaja en el cruce
       if (k.pos.y < rival.kite.pos.y + 2 && pointsUp && b.pause <= 0) {
         b.pulse = 0.25 + 0.2 * b.skill;
@@ -102,6 +120,14 @@ export function botThink(b: BotBrain, self: BotView, rivals: BotView[], windDir:
     }
   }
 
+  // Justo al cruzarse, los hábiles pegan un tirón o una largada para el golpe crítico
+  if (b.inContact && !b.wasContact && rand() < b.skill * 0.4) {
+    if (k.stress > 0.7 && rand() < 0.5) b.rapidLeft = 0.4;
+    else input.tiron = true;
+  }
+  if (b.wasContact && !b.inContact) b.triedTiron = false;
+  b.wasContact = b.inContact;
+
   // Tirones cortos cuando la punta mira hacia arriba (así se gana altura)
   if (b.mode !== 'atacar' && pointsUp && k.pos.y - self.anchor.y < b.targetLen * 0.55 && b.pause <= 0 && rand() < dt * 2) {
     b.pulse = 0.3;
@@ -113,6 +139,12 @@ export function botThink(b: BotBrain, self: BotView, rivals: BotView[], windDir:
       input.tirar = true;
       input.soltar = false;
     }
+  }
+  if (b.rapidLeft > 0) {
+    b.rapidLeft -= dt;
+    input.tirar = false;
+    input.soltar = true;
+    input.rapido = true;
   }
   // Nunca pasarse de tensión por mucho rato
   if (k.wear > 0.4) {

@@ -1,3 +1,5 @@
+import { BRIDLES, KITES, LINES, REELS, tuneBridle } from './items';
+import type { Loadout } from './kite';
 import { SPECIAL_DESIGNS } from './progression';
 
 /** Apariencia del personaje y diseño del volantín: compartidos para que el servidor pueda validarlos. */
@@ -20,7 +22,27 @@ export interface Gear {
   line: string;
   reel: string;
   bridle: string;
+  /** Perilla de amarre de los tirantes (0 = tranquilo, 1 = cabeceador); sin ella, como vienen. */
+  amarre?: number;
+  /** Mochila y colihue (fase 3); sin ellos, la bolsa de feria y a mano. */
+  bag?: string;
+  pole?: string;
 }
+
+/** Equipo con el que se vuela a partir de los ids elegidos (ids desconocidos: el primero de la lista). */
+export function gearLoadout(g: Gear): Loadout {
+  const pick = <T extends { id: string }>(list: T[], id: string) => list.find((i) => i.id === id) ?? list[0];
+  return {
+    kite: pick(KITES, g.kite),
+    line: pick(LINES, g.line),
+    reel: pick(REELS, g.reel),
+    bridle: tuneBridle(pick(BRIDLES, g.bridle), g.amarre),
+  };
+}
+
+/** Limpia la perilla de amarre que viene de afuera (número entre 0 y 1, o nada). */
+export const sanitizeAmarre = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.round(Math.min(1, Math.max(0, v)) * 100) / 100 : undefined;
 
 export const CHARACTERS = [
   { id: 'female-a', nombre: 'Coni' },

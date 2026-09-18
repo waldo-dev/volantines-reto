@@ -1,5 +1,7 @@
 import type { Gear, KiteDesign, Look } from './cosmetics';
-import type { KiteState } from './kite';
+import type { CarryItem } from './collect';
+import type { KiteState, ManeuverKind } from './kite';
+import type { MapId } from './maps';
 
 /** Mensajes del modo online (WebSocket en /ws). Números redondeados para que los paquetes sean chicos. */
 
@@ -20,6 +22,9 @@ export interface NetKite {
   w: number; // desgaste
   g: 0 | 1; // en el suelo
   s: 0 | 1; // guardado
+  m?: ManeuverKind; // última maniobra (si fue hace poco)
+  ma?: number; // hace cuánto empezó (s)
+  tc?: 1; // le cortaron la cola
 }
 
 /** Estado de un jugador para la red. `fid` cambia con cada volantín nuevo que encumbra. */
@@ -48,17 +53,35 @@ export interface NetFallen {
   g: 0 | 1;
 }
 
+/** Un jugador en el snapshot: estado, integridad del hilo, con quién está cruzado y si va en racha. */
+export interface NetSnapPlayer {
+  id: string;
+  s: NetState;
+  I: number;
+  x: string | null;
+  b?: 1;
+}
+
 export type ClientMsg =
-  | { t: 'join'; room: string; name: string; look: Look; design: KiteDesign; gear: Gear; token?: string | null }
+  /** `map`: el mapa que quiere (para partida rápida o sala nueva); con código manda el de la sala. */
+  | { t: 'join'; room: string; name: string; look: Look; design: KiteDesign; gear: Gear; token?: string | null; map?: MapId }
   | { t: 'state'; s: NetState }
   | { t: 'broken' } // mi hilo se cortó solo (desgaste)
   | { t: 'profile'; name: string; look: Look; design: KiteDesign; gear: Gear };
 
 export type ServerMsg =
-  | { t: 'welcome'; id: string; room: string; private: boolean; time: number; spawn: N3; info: NetPlayerInfo[] }
+  | { t: 'welcome'; id: string; room: string; private: boolean; time: number; spawn: N3; info: NetPlayerInfo[]; map: MapId }
   | { t: 'info'; info: NetPlayerInfo[] }
-  | { t: 'snap'; time: number; players: { id: string; s: NetState; I: number; x: string | null }[]; fallen: NetFallen[] }
-  | { t: 'cut'; victim: string; cutter: string | null }
+  | { t: 'snap'; time: number; players: NetSnapPlayer[]; fallen: NetFallen[] }
+  /**
+   * combo: largo del combo del que cortó; upset: cortó con peor hilo; streak: con este corte entró en racha;
+   * bonus: cortó dentro de la zona de bono; cable: se cortó en los cables.
+   */
+  | { t: 'cut'; victim: string; cutter: string | null; combo?: number; upset?: 1; streak?: 1; bonus?: 1; cable?: 1 }
+  | { t: 'crit'; by: string; victim: string; kind: ManeuverKind; p: N3 }
+  | { t: 'tail'; by: string; victim: string; p: N3 }
+  /** Alguien llegó a su casa con volantines en la mochila. */
+  | { t: 'delivered'; by: string; items: CarryItem[] }
   | { t: 'fallen'; id: string; owner: string; ownerName: string; design: KiteDesign; kite: string; p: N3; h: number }
   | { t: 'captured'; fallen: string; by: string }
   | { t: 'error'; msg: string };
@@ -66,8 +89,14 @@ export type ServerMsg =
 const r2 = (x: number) => Math.round(x * 100) / 100;
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 
+/** Una maniobra se manda mientras todavía puede contar para un golpe crítico. */
+const MANEUVER_TTL = 1;
+
 export function encodeKite(k: KiteState): NetKite {
+  const recent = k.maneuver !== 0 && k.maneuverAge < MANEUVER_TTL;
   return {
+    ...(recent ? { m: k.maneuver, ma: r2(k.maneuverAge) } : {}),
+    ...(k.tailCut ? { tc: 1 as const } : {}),
     p: [r2(k.pos.x), r2(k.pos.y), r2(k.pos.z)],
     v: [r2(k.vel.x), r2(k.vel.y), r2(k.vel.z)],
     h: r3(k.heading),
@@ -97,6 +126,9 @@ export function applyNetKite(k: KiteState, n: NetKite) {
   k.wear = n.w;
   k.grounded = n.g === 1;
   k.stowed = n.s === 1;
+  k.maneuver = n.m ?? 0;
+  k.maneuverAge = n.ma ?? 99;
+  k.tailCut = n.tc === 1;
 }
 
 /** Aplana el hilo para la red con a lo más `maxPoints` puntos (siempre incluye mano y volantín). */

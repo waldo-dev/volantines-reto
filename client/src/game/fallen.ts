@@ -1,10 +1,21 @@
 import * as THREE from 'three';
-import { createKite, groundHeight, stepKite, type KiteDef, type KiteDesign, type KiteState, type Loadout, type NetFallen, type V3 } from '@volantines/shared';
+import {
+  canReach,
+  createKite,
+  groundHeight,
+  stepKite,
+  type CarryItem,
+  type KiteDef,
+  type KiteDesign,
+  type KiteState,
+  type Loadout,
+  type NetFallen,
+  type PoleDef,
+  type V3,
+} from '@volantines/shared';
 import { KiteView } from '../entities/kiteView';
 import type { Flyer } from './flyer';
 
-/** A qué distancia (horizontal) se alcanza a recoger un volantín caído. */
-export const CAPTURE_RADIUS = 2.4;
 /** Segundos que un volantín queda en el suelo antes de que se lo lleve alguien más (desaparece). */
 const LIFETIME_ON_GROUND = 90;
 
@@ -21,6 +32,9 @@ export interface FallenKite {
   ownerName: string;
   groundTime: number;
   beam: THREE.Mesh;
+  /** Se le cayó de la mochila a este jugador: no lo puede recoger hasta `lockUntil` (s de juego). */
+  lockBy?: string;
+  lockUntil?: number;
 }
 
 const NO_INPUT = { tirar: false, soltar: false, dirX: 0 };
@@ -77,6 +91,31 @@ export class FallenKites {
     for (const f of [...this.list]) this.remove(f);
   }
 
+  /** Un volantín que se cayó de la mochila de `by`: queda en el suelo junto a `p` para que lo recoja otro. */
+  addDropped(item: CarryItem, def: KiteDef, lo: Loadout, p: V3, by: string, lockUntil: number) {
+    const pos = { x: p.x + 0.8, y: groundHeight(p.x + 0.8, p.z) + 0.3, z: p.z };
+    const kite = createKite(pos, 1, 0);
+    kite.pos = { ...pos };
+    kite.broken = true;
+    const view = new KiteView(def, item.design, this.scene, true);
+    view.resetTail(kite.pos);
+    this.list.push({
+      id: `local-${this.nextId++}`,
+      remote: false,
+      target: null,
+      kite,
+      view,
+      design: item.design,
+      lo,
+      owner: item.owner,
+      ownerName: item.ownerName,
+      groundTime: 0,
+      beam: this.beam(),
+      lockBy: by,
+      lockUntil,
+    });
+  }
+
   add(from: Flyer, detached: { kite: KiteState; view: KiteView }) {
     const beam = this.beam();
     this.list.push({
@@ -123,22 +162,32 @@ export class FallenKites {
     }
   }
 
-  /** Quien esté más cerca de un volantín caído (y a menos de CAPTURE_RADIUS) se lo queda. */
-  captures(flyers: Flyer[]): { fallen: FallenKite; by: Flyer }[] {
+  /**
+   * Quien esté más cerca de un volantín caído y lo alcance se lo queda. `poleOf` dice con qué colihue
+   * recoge cada uno, o null si no puede recoger (mochila llena).
+   */
+  captures(flyers: Flyer[], poleOf: (f: Flyer) => PoleDef | null, now = 0): { fallen: FallenKite; by: Flyer }[] {
     const out: { fallen: FallenKite; by: Flyer }[] = [];
+    const taken = new Map<Flyer, number>();
     for (const f of this.list) {
       const k = f.kite;
-      if (k.pos.y - groundHeight(k.pos.x, k.pos.z) > 2.5) continue;
+      const height = k.pos.y - groundHeight(k.pos.x, k.pos.z);
       let best: Flyer | null = null;
-      let bestD = CAPTURE_RADIUS;
+      let bestD = Infinity;
       for (const fl of flyers) {
+        if (taken.has(fl)) continue; // uno por paso: así se respeta la capacidad de la mochila
+        if (f.lockBy === fl.id && now < (f.lockUntil ?? 0)) continue;
+        const pole = poleOf(fl);
         const d = Math.hypot(fl.pos.x - k.pos.x, fl.pos.z - k.pos.z);
-        if (d < bestD) {
+        if (pole && d < bestD && canReach(pole, d, height)) {
           bestD = d;
           best = fl;
         }
       }
-      if (best) out.push({ fallen: f, by: best });
+      if (best) {
+        out.push({ fallen: f, by: best });
+        taken.set(best, 1);
+      }
     }
     for (const c of out) this.remove(c.fallen);
     return out;

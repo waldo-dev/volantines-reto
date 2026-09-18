@@ -4,6 +4,8 @@ import type { KiteInput, KiteState, Loadout } from './kite';
 import type { V3 } from './vec';
 
 export const BOT_NAMES = ['Pancho', 'La Rucia', 'Don Lucho', 'Cote', 'El Flaco', 'Tía Marta'];
+const BOT_KITES = ['mediano', 'mediano', 'cambucha', 'necla', 'chonchon'];
+const BOT_KITES_GOOD = ['mediano', 'necla', 'chonchon', 'grande', 'gigante'];
 
 const pick = <T>(list: readonly T[], rand: () => number) => list[Math.floor(rand() * list.length)];
 
@@ -21,8 +23,8 @@ export function randomBot(i: number, rand: () => number): { name: string; look: 
     },
     design: { pattern: pick(PATTERNS.filter((p) => p.id !== 'chile'), rand).id, colors, tail: colors[0] },
     gear: {
-      kite: rand() < 0.3 ? 'grande' : 'mediano',
-      line: skill > 0.65 ? 'curado' : 'algodon',
+      kite: pick(skill > 0.65 ? BOT_KITES_GOOD : BOT_KITES, rand),
+      line: pick(skill > 0.7 ? ['curado', 'curado-vidrio', 'curado-trenzado'] : skill > 0.5 ? ['algodon-encerado', 'curado'] : ['algodon', 'algodon-encerado'], rand),
       reel: 'mano',
       bridle: rand() < 0.35 ? 'cabeceador' : 'normal',
     },

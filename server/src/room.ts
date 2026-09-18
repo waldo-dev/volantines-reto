@@ -1,58 +1,75 @@
 import {
   BOT_NAMES,
+  DEFAULT_GEAR,
+  DELIVERY_RADIUS,
+  DROP_LOCK,
   EMPTY_STATS,
   MAX_PLAYERS,
   NET_RATE,
   Rope,
   applyNetKite,
+  bagOf,
+  cableSegments,
+  canReach,
   createBrain,
   createKite,
   decodeRope,
   encodeKite,
   encodeRope,
+  gearLoadout,
   groundHeight,
+  inBonus,
+  isUpset,
+  mapById,
+  newCombo,
   owns,
+  poleOf,
+  registerCut,
+  resetCombo,
+  streakActive,
   randomBot,
+  resolveCables,
   resolveCrossings,
+  resolveTailCuts,
   roomCode,
+  sanitizeAmarre,
   sanitizeDesign,
   sanitizeLook,
   spawnSlot,
   stepKite,
   updateBotBody,
+  useMap,
   windAt,
   type BotBody,
   type BotBrain,
   type BotView,
+  type CarryItem,
+  type ComboState,
   type Gear,
+  type Hook,
   type KiteDesign,
   type KiteState,
   type LineBody,
   type Loadout,
   type Look,
+  type MapId,
   type NetPlayerInfo,
   type NetState,
   type Progress,
   type ServerMsg,
   type V3,
 } from '@volantines/shared';
-import { BRIDLES, KITES, LINES, REELS } from '@volantines/shared';
 import type { WebSocket } from 'ws';
 
 const TICK = 1 / NET_RATE;
 const SUBSTEPS = 6; // física a 120 Hz para bots y volantines caídos
-const CAPTURE_RADIUS = 2.4;
+/** Los bots recogen a mano y sin límite. */
+const BOT_POLE = poleOf('mano');
 const FALLEN_LIFETIME = 90;
 const EMPTY_ROOM_TTL = 30_000;
 const NO_INPUT = { tirar: false, soltar: false, dirX: 0 };
 
-const pickItem = <T extends { id: string }>(list: T[], id: string) => list.find((i) => i.id === id) ?? list[0];
-export const loadoutOf = (g: Gear): Loadout => ({
-  kite: pickItem(KITES, g.kite),
-  line: pickItem(LINES, g.line),
-  reel: pickItem(REELS, g.reel),
-  bridle: pickItem(BRIDLES, g.bridle),
-});
+export const loadoutOf = (g: Gear): Loadout => gearLoadout(g);
 
 /** Deja solo el equipo que el jugador tiene (invitados: solo lo inicial). */
 export function allowedGear(g: Partial<Gear> | undefined, progress: Progress | null): Gear {
@@ -61,7 +78,16 @@ export function allowedGear(g: Partial<Gear> | undefined, progress: Progress | n
     const id = g?.[kind];
     return typeof id === 'string' && owns(p, `${kind}:${id}`) ? id : fallback;
   };
-  return { kite: pick('kite', 'mediano'), line: pick('line', 'algodon'), reel: pick('reel', 'mano'), bridle: pick('bridle', 'normal') };
+  const amarre = sanitizeAmarre(g?.amarre);
+  return {
+    kite: pick('kite', 'mediano'),
+    line: pick('line', 'algodon'),
+    reel: pick('reel', 'mano'),
+    bridle: pick('bridle', 'normal'),
+    bag: pick('bag', 'bolsa'),
+    pole: pick('pole', 'mano'),
+    ...(amarre !== undefined ? { amarre } : {}),
+  };
 }
 
 interface Human {
@@ -78,8 +104,13 @@ interface Human {
   integrity: number;
   /** Volantín (fid) que el servidor ya dio por cortado: se ignora hasta que encumbre otro. */
   deadFid: number;
+  /** Volantín (fid) al que el servidor ya le cortó la cola (por si el cliente todavía no lo sabe). */
+  tailCutFid: number;
   scratchKite: KiteState;
   scratchPts: V3[];
+  /** Volantines capturados que lleva en la mochila (se cobran al llegar a su casa). */
+  bag: CarryItem[];
+  home: V3;
 }
 
 class Bot implements BotBody {
@@ -164,7 +195,12 @@ interface Fallen {
   lo: Loadout;
   kite: KiteState;
   groundTime: number;
+  /** Se le cayó de la mochila a este jugador: no lo puede recoger hasta `lockUntil`. */
+  lockBy?: string;
+  lockUntil?: number;
 }
+
+const carryOf = (f: Fallen): CarryItem => ({ design: f.design, kite: f.lo.kite.id, owner: f.owner, ownerName: f.ownerName });
 
 let nextId = 1;
 const newId = (prefix: string) => `${prefix}${(nextId++).toString(36)}`;
@@ -174,18 +210,27 @@ export class Room {
   readonly humans = new Map<string, Human>();
   private bots: Bot[] = [];
   private fallen: Fallen[] = [];
-  private hooks = new Set<string>();
+  private hooks = new Map<string, Hook>();
+  private combos = new Map<string, ComboState>();
   private contacts = new Set<string>();
   private crossingOf = new Map<string, string>();
   time = 0;
   private timer: NodeJS.Timeout;
   private emptySince = Date.now();
+  /** Tramos de cable del mapa (se calculan una vez). */
+  private cables: ReturnType<typeof cableSegments>;
+  /** Quién se cortó en los cables (para avisarlo así). */
+  private cableHits = new Set<string>();
 
   constructor(
     readonly code: string,
     readonly isPrivate: boolean,
     private onEmpty: (room: Room) => void,
+    readonly map: MapId = 'cerro',
   ) {
+    // El terreno y el viento son los del mapa de la sala (se activa antes de simular)
+    useMap(map);
+    this.cables = cableSegments(mapById(map), groundHeight);
     this.syncBots();
     this.timer = setInterval(() => this.tick(), TICK * 1000);
   }
@@ -199,6 +244,7 @@ export class Room {
   }
 
   join(ws: WebSocket, p: { name: string; look: Look; design: KiteDesign; gear: Gear; progress: Progress | null }): Human {
+    useMap(this.map);
     const used = new Set([...this.humans.values()].map((h) => h.slot));
     let slot = 0;
     while (used.has(slot)) slot++;
@@ -215,19 +261,24 @@ export class Room {
       state: null,
       integrity: 100,
       deadFid: -1,
+      tailCutFid: -1,
       scratchKite: createKite({ x: 0, y: 0, z: 0 }, 1, 0),
       scratchPts: [],
+      bag: [],
+      home: { ...spawnSlot(slot) },
     };
     this.humans.set(h.id, h);
     this.syncBots();
     const spawn = spawnSlot(slot);
-    this.send(h, { t: 'welcome', id: h.id, room: this.code, private: this.isPrivate, time: this.time, spawn: [spawn.x, spawn.y, spawn.z], info: this.info() });
+    this.send(h, { t: 'welcome', id: h.id, room: this.code, private: this.isPrivate, time: this.time, spawn: [spawn.x, spawn.y, spawn.z], info: this.info(), map: this.map });
     this.broadcast({ t: 'info', info: this.info() });
     return h;
   }
 
   leave(h: Human) {
+    useMap(this.map);
     this.humans.delete(h.id);
+    this.combos.delete(h.id);
     this.syncBots();
     this.broadcast({ t: 'info', info: this.info() });
     if (this.humans.size === 0) this.emptySince = Date.now();
@@ -249,11 +300,72 @@ export class Room {
 
   /** El cliente avisa que su hilo se cortó solo (desgaste por sobretensión). */
   selfBroken(h: Human) {
+    useMap(this.map);
     const s = h.state;
     if (!s?.k || s.fid === h.deadFid) return;
     h.deadFid = s.fid;
     this.dropKite(h.id, h.name, h.design, h.loadout, s);
+    this.dropCarried(h);
+    resetCombo(this.combo(h.id));
     this.broadcast({ t: 'cut', victim: h.id, cutter: null });
+  }
+
+  /** Al que cortan con la mochila cargada se le cae un volantín donde está parado. */
+  private dropCarried(h: Human) {
+    const item = h.bag.pop();
+    if (!item || !h.state) return;
+    const [x, , z] = h.state.p;
+    const p: V3 = { x: x + 0.8, y: groundHeight(x + 0.8, z) + 0.3, z };
+    const lo = loadoutOf({ ...DEFAULT_GEAR, kite: item.kite });
+    const kite = createKite(p, 1, 0);
+    kite.pos = { ...p };
+    kite.broken = true;
+    const f: Fallen = {
+      id: newId('f'),
+      owner: item.owner,
+      ownerName: item.ownerName,
+      design: item.design,
+      lo,
+      kite,
+      groundTime: 0,
+      lockBy: h.id,
+      lockUntil: this.time + DROP_LOCK,
+    };
+    this.fallen.push(f);
+    this.broadcast({ t: 'fallen', id: f.id, owner: f.owner, ownerName: f.ownerName, design: f.design, kite: lo.kite.id, p: [p.x, p.y, p.z], h: 0 });
+  }
+
+  private combo(id: string) {
+    let c = this.combos.get(id);
+    if (!c) this.combos.set(id, (c = newCombo()));
+    return c;
+  }
+
+  private boosted(id: string) {
+    const c = this.combos.get(id);
+    return !!c && streakActive(c, this.time);
+  }
+
+  /** Anuncia un corte: suma el combo del que cortó (y su racha) y borra el del cortado. */
+  private announceCut(victim: string, victimLo: Loadout, cutter: string | null) {
+    resetCombo(this.combo(victim));
+    if (!cutter) {
+      this.broadcast({ t: 'cut', victim, cutter: null, ...(this.cableHits.has(victim) ? { cable: 1 as const } : {}) });
+      return;
+    }
+    const cutterKite = this.humans.get(cutter)?.scratchKite ?? this.bots.find((b) => b.id === cutter)?.kite;
+    const bonus = !!cutterKite && inBonus(mapById(this.map), cutterKite.pos);
+    const { combo, streakStarted } = registerCut(this.combo(cutter), this.time);
+    const cutterLo = this.humans.get(cutter)?.loadout ?? this.bots.find((b) => b.id === cutter)?.loadout;
+    this.broadcast({
+      t: 'cut',
+      victim,
+      cutter,
+      ...(combo > 1 ? { combo } : {}),
+      ...(cutterLo && isUpset(cutterLo.line, victimLo.line) ? { upset: 1 as const } : {}),
+      ...(streakStarted ? { streak: 1 as const } : {}),
+      ...(bonus ? { bonus: 1 as const } : {}),
+    });
   }
 
   /** Bots de relleno: 3 con una persona, 2 con dos, 1 con tres, ninguno con cuatro o más. */
@@ -304,11 +416,12 @@ export class Room {
     applyNetKite(k, s.k);
     k.broken = false;
     k.integrity = h.integrity;
+    if (h.tailCutFid === s.fid) k.tailCut = true;
     const n = s.rope.length / 3;
     while (h.scratchPts.length < n) h.scratchPts.push({ x: 0, y: 0, z: 0 });
     h.scratchPts.length = n;
     decodeRope(s.rope, h.scratchPts);
-    return { id: h.id, pts: h.scratchPts, kite: k, lo: h.loadout };
+    return { id: h.id, pts: h.scratchPts, kite: k, lo: h.loadout, boost: this.boosted(h.id) };
   }
 
   private tick() {
@@ -316,6 +429,7 @@ export class Room {
       if (Date.now() - this.emptySince > EMPTY_ROOM_TTL) this.onEmpty(this);
       return;
     }
+    useMap(this.map);
     const dt = TICK / SUBSTEPS;
     const views: BotView[] = [];
     for (const h of this.humans.values()) {
@@ -368,8 +482,16 @@ export class Room {
       const l = this.humanLine(h);
       if (l) lines.push(l);
     }
-    for (const b of this.bots) if (b.flying) lines.push({ id: b.id, pts: b.rope.pts, kite: b.kite!, lo: b.loadout });
+    for (const b of this.bots) if (b.flying) lines.push({ id: b.id, pts: b.rope.pts, kite: b.kite!, lo: b.loadout, boost: this.boosted(b.id) });
+    this.cableHits.clear();
+    for (const c of resolveCables(lines, this.cables, TICK)) this.cableHits.add(c.id);
     const contacts = resolveCrossings(lines, TICK, this.hooks);
+    for (const tc of resolveTailCuts(lines)) {
+      const h = this.humans.get(tc.victim);
+      if (h?.state) h.tailCutFid = h.state.fid;
+      const p: [number, number, number] = [Math.round(tc.point.x * 100) / 100, Math.round(tc.point.y * 100) / 100, Math.round(tc.point.z * 100) / 100];
+      this.broadcast({ t: 'tail', by: tc.by, victim: tc.victim, p });
+    }
     this.contacts.clear();
     this.crossingOf.clear();
     const lastDamager = new Map<string, string>();
@@ -379,6 +501,8 @@ export class Room {
       this.crossingOf.set(c.b, c.a);
       lastDamager.set(c.a, c.b);
       lastDamager.set(c.b, c.a);
+      const p: [number, number, number] = [Math.round(c.point.x * 100) / 100, Math.round(c.point.y * 100) / 100, Math.round(c.point.z * 100) / 100];
+      for (const cr of c.crits) this.broadcast({ t: 'crit', by: cr.by, victim: cr.victim, kind: cr.kind, p });
     }
     for (const h of this.humans.values()) {
       const l = lines.find((x) => x.id === h.id);
@@ -387,21 +511,24 @@ export class Room {
       if (l.kite.broken && h.state) {
         h.deadFid = h.state.fid;
         this.dropKite(h.id, h.name, h.design, h.loadout, h.state);
-        this.broadcast({ t: 'cut', victim: h.id, cutter: lastDamager.get(h.id) ?? null });
+        this.dropCarried(h);
+        this.announceCut(h.id, h.loadout, this.cableHits.has(h.id) ? null : (lastDamager.get(h.id) ?? null));
       }
     }
     for (const b of this.bots) {
       if (!b.kite?.broken) continue;
-      const cutter = b.kite.integrity <= 0 ? (lastDamager.get(b.id) ?? null) : null;
+      const cutter = b.kite.integrity <= 0 && !this.cableHits.has(b.id) ? (lastDamager.get(b.id) ?? null) : null;
       this.dropKite(b.id, b.name, b.design, b.loadout, b.netState());
       b.kite = null;
-      this.broadcast({ t: 'cut', victim: b.id, cutter });
+      this.announceCut(b.id, b.loadout, cutter);
     }
 
-    // Capturas: el más cercano a un volantín caído (a menos de 2,4 m) se lo queda
-    const walkers: { id: string; p: V3 }[] = [
-      ...[...this.humans.values()].filter((h) => h.state).map((h) => ({ id: h.id, p: { x: h.state!.p[0], y: h.state!.p[1], z: h.state!.p[2] } })),
-      ...this.bots.map((b) => ({ id: b.id, p: b.pos })),
+    // Capturas: el más cercano que alcance (según su colihue) y tenga espacio en la mochila se lo queda
+    const walkers: { id: string; p: V3; human: Human | null }[] = [
+      ...[...this.humans.values()]
+        .filter((h) => h.state && h.bag.length < bagOf(h.gear.bag).capacidad)
+        .map((h) => ({ id: h.id, p: { x: h.state!.p[0], y: h.state!.p[1], z: h.state!.p[2] }, human: h })),
+      ...this.bots.map((b) => ({ id: b.id, p: b.pos, human: null })),
     ];
     for (const f of [...this.fallen]) {
       const k = f.kite;
@@ -410,21 +537,36 @@ export class Room {
         this.broadcast({ t: 'captured', fallen: f.id, by: '' });
         continue;
       }
-      if (k.pos.y - groundHeight(k.pos.x, k.pos.z) > 2.5) continue;
-      let best: string | null = null;
-      let bestD = CAPTURE_RADIUS;
+      const height = k.pos.y - groundHeight(k.pos.x, k.pos.z);
+      let best: (typeof walkers)[number] | null = null;
+      let bestD = Infinity;
       for (const w of walkers) {
         const d = Math.hypot(w.p.x - k.pos.x, w.p.z - k.pos.z);
-        if (d < bestD) {
+        if (f.lockBy === w.id && this.time < (f.lockUntil ?? 0)) continue;
+        const pole = w.human ? poleOf(w.human.gear.pole) : BOT_POLE;
+        if (d < bestD && canReach(pole, d, height)) {
           bestD = d;
-          best = w.id;
+          best = w;
         }
       }
       if (!best) continue;
       this.fallen.splice(this.fallen.indexOf(f), 1);
-      this.broadcast({ t: 'captured', fallen: f.id, by: best });
-      const bot = this.bots.find((b) => b.id === best);
+      this.broadcast({ t: 'captured', fallen: f.id, by: best.id });
+      if (best.human) {
+        best.human.bag.push(carryOf(f));
+        // Mochila llena: ya no recoge más hasta entregar
+        if (best.human.bag.length >= bagOf(best.human.gear.bag).capacidad) walkers.splice(walkers.indexOf(best), 1);
+      }
+      const bot = this.bots.find((b) => b.id === best.id);
       if (bot) bot.botState = 'volver';
+      continue;
+    }
+
+    // Entregas: con volantines en la mochila y parado en su casa
+    for (const h of this.humans.values()) {
+      if (!h.bag.length || !h.state) continue;
+      if (Math.hypot(h.state.p[0] - h.home.x, h.state.p[2] - h.home.z) > DELIVERY_RADIUS) continue;
+      this.broadcast({ t: 'delivered', by: h.id, items: h.bag.splice(0) });
     }
 
     // Snapshot para todos
@@ -434,8 +576,14 @@ export class Room {
       players: [
         ...[...this.humans.values()]
           .filter((h) => h.state)
-          .map((h) => ({ id: h.id, s: h.state!, I: Math.round(h.integrity), x: this.crossingOf.get(h.id) ?? null })),
-        ...this.bots.map((b) => ({ id: b.id, s: b.netState(), I: Math.round(b.kite?.integrity ?? 100), x: this.crossingOf.get(b.id) ?? null })),
+          .map((h) => ({ id: h.id, s: h.state!, I: Math.round(h.integrity), x: this.crossingOf.get(h.id) ?? null, ...(this.boosted(h.id) ? { b: 1 as const } : {}) })),
+        ...this.bots.map((b) => ({
+          id: b.id,
+          s: b.netState(),
+          I: Math.round(b.kite?.integrity ?? 100),
+          x: this.crossingOf.get(b.id) ?? null,
+          ...(this.boosted(b.id) ? { b: 1 as const } : {}),
+        })),
       ],
       fallen: this.fallen.map((f) => ({
         id: f.id,
@@ -464,27 +612,32 @@ export class Room {
 export class Lobby {
   private rooms = new Map<string, Room>();
 
-  /** '' = partida rápida (sala pública con espacio), 'NUEVA' = sala privada nueva, otro = código. */
-  find(request: string): Room | string {
+  /** '' = partida rápida (sala pública con espacio en ese mapa), 'NUEVA' = sala privada nueva, otro = código. */
+  find(request: string, map: MapId = 'cerro'): Room | string {
     const code = request.trim().toUpperCase();
     if (code === '') {
-      for (const r of this.rooms.values()) if (!r.isPrivate && !r.full) return r;
-      return this.create(false);
+      for (const r of this.rooms.values()) if (!r.isPrivate && !r.full && r.map === map) return r;
+      return this.create(false, map);
     }
-    if (code === 'NUEVA') return this.create(true);
+    if (code === 'NUEVA') return this.create(true, map);
     const r = this.rooms.get(code);
     if (!r) return 'No existe una sala con ese código.';
     if (r.full) return 'La sala está llena.';
     return r;
   }
 
-  private create(isPrivate: boolean) {
+  private create(isPrivate: boolean, map: MapId) {
     let code = roomCode();
     while (this.rooms.has(code)) code = roomCode();
-    const room = new Room(code, isPrivate, (r) => {
-      r.close();
-      this.rooms.delete(r.code);
-    });
+    const room = new Room(
+      code,
+      isPrivate,
+      (r) => {
+        r.close();
+        this.rooms.delete(r.code);
+      },
+      map,
+    );
     this.rooms.set(code, room);
     return room;
   }

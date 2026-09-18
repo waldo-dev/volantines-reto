@@ -3,6 +3,8 @@ import {
   DEFAULT_GEAR,
   DEFAULT_LOOK,
   EMPTY_STATS,
+  MAX_STATS,
+  MAX_TROPHIES,
   applyEvents,
   buyError,
   catalogItem,
@@ -11,12 +13,14 @@ import {
   owns,
   sanitizeDesign,
   sanitizeLook,
+  sanitizeTrophy,
   type GameEvents,
   type Gear,
   type KiteDesign,
   type Look,
   type Progress,
   type Stats,
+  type Trophy,
 } from '@volantines/shared';
 
 /** Lo que el juego necesita saber del jugador, venga del servidor o del navegador (invitado). */
@@ -25,7 +29,7 @@ export interface PlayerData extends Progress {
   look: Look;
   design: KiteDesign;
   gear: Gear;
-  captured: KiteDesign[];
+  captured: Trophy[];
 }
 
 export interface Rewards {
@@ -37,7 +41,6 @@ export interface Rewards {
 
 const TOKEN_KEY = 'volantines.token';
 const GUEST_KEY = 'volantines.guest.v1';
-const MAX_CAPTURED = 30;
 
 const store = {
   get(key: string) {
@@ -103,7 +106,7 @@ export class Session {
   onRewards: (r: Rewards) => void = () => {};
 
   private pending: GameEvents = { ...EMPTY_STATS };
-  private pendingCaptured: KiteDesign[] = [];
+  private pendingCaptured: Trophy[] = [];
   private lastGuestReport = performance.now();
   private reporting = false;
   private saveTimer = 0;
@@ -205,18 +208,29 @@ export class Session {
   // --- Eventos de juego ---
 
   add(event: keyof Stats, value = 1) {
-    if (event === 'bestAltitude' || event === 'longestFlight') this.pending[event] = Math.max(this.pending[event], value);
+    if (MAX_STATS.includes(event)) this.pending[event] = Math.max(this.pending[event], value);
     else this.pending[event] += value;
   }
 
-  capture(design: KiteDesign) {
+  /** Un volantín entregado en tu casa: cuenta como captura y queda en el álbum. */
+  capture(trophy: Trophy) {
     this.pending.captures++;
-    this.pendingCaptured.push(design);
+    this.pendingCaptured.push(trophy);
   }
 
   private hasPending() {
     const p = this.pending;
-    return p.flightSeconds >= 1 || p.cuts || p.captures || p.cutBy || p.stows || p.fullLine || p.bestAltitude > this.data.stats.bestAltitude || p.longestFlight > this.data.stats.longestFlight;
+    return (
+      p.flightSeconds >= 1 ||
+      p.cuts ||
+      p.captures ||
+      p.cutBy ||
+      p.stows ||
+      p.fullLine ||
+      p.crits ||
+      p.bestAltitude > this.data.stats.bestAltitude ||
+      p.longestFlight > this.data.stats.longestFlight
+    );
   }
 
   /** Envía lo acumulado (se llama cada ~15 s y justo después de cortes y capturas). */
@@ -231,7 +245,7 @@ export class Session {
       const now = performance.now();
       const r = applyEvents(this.data, events, (now - this.lastGuestReport) / 1000 + 1);
       this.lastGuestReport = now;
-      this.data.captured = [...captured, ...this.data.captured].slice(0, MAX_CAPTURED);
+      this.data.captured = [...captured, ...this.data.captured].slice(0, MAX_TROPHIES);
       this.saveGuest();
       this.onRewards({ coins: r.coins, xp: r.xp, levelUp: r.levelUp, achievements: r.unlocked });
       this.onChange();
@@ -263,7 +277,8 @@ export class Session {
       const raw = store.get(GUEST_KEY);
       if (raw) {
         const g = JSON.parse(raw) as PlayerData;
-        return { ...freshGuest(), ...g, stats: { ...EMPTY_STATS, ...g.stats }, look: sanitizeLook(g.look), design: sanitizeDesign(g.design) };
+        const captured = (Array.isArray(g.captured) ? g.captured : []).map((t) => sanitizeTrophy(t)).filter((t): t is Trophy => !!t);
+        return { ...freshGuest(), ...g, captured, stats: { ...EMPTY_STATS, ...g.stats }, look: sanitizeLook(g.look), design: sanitizeDesign(g.design) };
       }
     } catch {
       // perfil dañado: se parte de cero

@@ -19,6 +19,7 @@ import {
   resolveCrossings,
   segmentDistance,
   stepKite,
+  type Hook,
   type LineBody,
   type Loadout,
   type Progress,
@@ -152,7 +153,7 @@ describe('enganche de hilos', () => {
   });
 
   it('cruzados siguen raspándose aunque se separen un poco', () => {
-    const hooks = new Set<string>();
+    const hooks = new Map<string, Hook>();
     const [a, b] = crossedLines();
     resolveCrossings([a, b], DT, hooks);
     expect(hooks.size).toBe(1);

@@ -1,10 +1,15 @@
-import { BRIDLES, KITES, LINES, REELS } from './items';
+import { BAGS, BRIDLES, KITES, LINES, POLES, RARITY_VALUE, REELS } from './items';
 
 /** Recompensas en monedas; la XP es el doble de las monedas ganadas (ver spec). */
 export const REWARDS = {
   flightPer10s: 1,
   cut: 25,
   capture: 30,
+  crit: 5, // golpe crítico (tirón o largada justo al cruzarse)
+  upset: 25, // extra por cortar con un hilo de menor nivel
+  comboCut: 15, // extra por cada corte que sigue un combo (del segundo en adelante)
+  tailCut: 10, // cortarle la cola a un volantín rival
+  bonusCut: 20, // extra por cortar con tu volantín dentro de la zona de bono del mapa
 };
 
 export interface Stats {
@@ -16,6 +21,16 @@ export interface Stats {
   longestFlight: number;
   stows: number;
   fullLine: number;
+  crits: number;
+  upsets: number;
+  comboCuts: number;
+  bestCombo: number;
+  tailCuts: number;
+  /** Más volantines entregados de una vez en tu casa. */
+  bestDelivery: number;
+  /** Monedas extra ganadas por rareza y colihue al entregar. */
+  captureBonus: number;
+  bonusCuts: number;
 }
 
 export const EMPTY_STATS: Stats = {
@@ -27,7 +42,21 @@ export const EMPTY_STATS: Stats = {
   longestFlight: 0,
   stows: 0,
   fullLine: 0,
+  crits: 0,
+  upsets: 0,
+  comboCuts: 0,
+  bestCombo: 0,
+  tailCuts: 0,
+  bestDelivery: 0,
+  captureBonus: 0,
+  bonusCuts: 0,
 };
+
+/** Estadísticas que se guardan como máximo (no se suman). */
+export const MAX_STATS: (keyof Stats)[] = ['bestAltitude', 'longestFlight', 'bestCombo', 'bestDelivery'];
+
+/** Lo más que puede pagar de extra un volantín entregado: legendario con el mejor colihue. */
+export const MAX_CAPTURE_BONUS = Math.round(30 * RARITY_VALUE.legendario * (1 + Math.max(...POLES.map((p) => p.bono)))) - 30;
 
 /** Lo que el cliente informa que pasó desde el último reporte. */
 export type GameEvents = Stats;
@@ -51,6 +80,16 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'pescador', nombre: 'Pescador', descripcion: 'Captura un volantín caído', monedas: 40, done: (s) => s.captures >= 1 },
   { id: 'coleccionista', nombre: 'Coleccionista', descripcion: 'Captura 10 volantines', monedas: 150, done: (s) => s.captures >= 10 },
   { id: 'veterano', nombre: 'Veterano', descripcion: 'Vuela 1 hora en total', monedas: 200, done: (s) => s.flightSeconds >= 3600 },
+  { id: 'critico', nombre: '¡Crítico!', descripcion: 'Pega un tirón o una largada justo al cruzarte', monedas: 30, done: (s) => s.crits >= 1 },
+  { id: 'tironero', nombre: 'Tironero', descripcion: 'Haz 25 golpes críticos', monedas: 150, done: (s) => s.crits >= 25 },
+  { id: 'doblete', nombre: '¡Doble!', descripcion: 'Corta dos volantines seguidos', monedas: 60, done: (s) => s.bestCombo >= 2 },
+  { id: 'encachado', nombre: '¡Encachado!', descripcion: 'Corta tres seguidos y entra en racha', monedas: 120, done: (s) => s.bestCombo >= 3 },
+  { id: 'contra-corriente', nombre: 'Contra la corriente', descripcion: 'Corta a alguien que tiene mejor hilo que tú', monedas: 80, done: (s) => s.upsets >= 1 },
+  { id: 'repartidor', nombre: 'Repartidor', descripcion: 'Entrega 4 volantines de una vez en tu casa', monedas: 80, done: (s) => s.bestDelivery >= 4 },
+  { id: 'saco-lleno', nombre: 'Saco lleno', descripcion: 'Entrega 8 volantines de una vez', monedas: 200, done: (s) => s.bestDelivery >= 8 },
+  { id: 'en-la-zona', nombre: '¡En la zona!', descripcion: 'Corta a alguien dentro de una zona de bono', monedas: 50, done: (s) => s.bonusCuts >= 1 },
+  { id: 'cortacolas', nombre: 'Cortacolas', descripcion: 'Córtale la cola a un volantín con un tirón', monedas: 40, done: (s) => s.tailCuts >= 1 },
+  { id: 'peluquero', nombre: 'Peluquero', descripcion: 'Corta 10 colas', monedas: 150, done: (s) => s.tailCuts >= 10 },
 ];
 
 /** Diseños especiales ilustrados que se compran con monedas. */
@@ -63,7 +102,7 @@ export const SPECIAL_DESIGNS = [
   { id: 'kite-fuego', nombre: 'Fuego', nivel: 4, precio: 250 },
 ];
 
-export type ItemKind = 'kite' | 'line' | 'reel' | 'bridle' | 'design';
+export type ItemKind = 'kite' | 'line' | 'reel' | 'bridle' | 'bag' | 'pole' | 'design';
 
 export interface CatalogItem {
   key: string; // "kind:id"
@@ -79,6 +118,8 @@ export const CATALOG: CatalogItem[] = [
   ...LINES.map((i) => ({ key: `line:${i.id}`, kind: 'line' as const, id: i.id, nombre: i.nombre, nivel: i.nivel, precio: i.precio })),
   ...REELS.map((i) => ({ key: `reel:${i.id}`, kind: 'reel' as const, id: i.id, nombre: i.nombre, nivel: i.nivel, precio: i.precio })),
   ...BRIDLES.map((i) => ({ key: `bridle:${i.id}`, kind: 'bridle' as const, id: i.id, nombre: i.nombre, nivel: i.nivel, precio: i.precio })),
+  ...BAGS.map((i) => ({ key: `bag:${i.id}`, kind: 'bag' as const, id: i.id, nombre: i.nombre, nivel: i.nivel, precio: i.precio })),
+  ...POLES.map((i) => ({ key: `pole:${i.id}`, kind: 'pole' as const, id: i.id, nombre: i.nombre, nivel: i.nivel, precio: i.precio })),
   ...SPECIAL_DESIGNS.map((i) => ({ key: `design:${i.id}`, kind: 'design' as const, id: i.id, nombre: i.nombre, nivel: i.nivel, precio: i.precio })),
 ];
 
@@ -136,7 +177,23 @@ export function applyEvents(p: Progress, raw: Partial<GameEvents>, elapsed: numb
     longestFlight: cap(raw.longestFlight, p.stats.longestFlight + elapsed + 5),
     stows: cap(raw.stows, Math.ceil(elapsed / 3)),
     fullLine: cap(raw.fullLine, Math.ceil(elapsed / 3)),
+    crits: cap(raw.crits, Math.ceil(elapsed / 2)),
+    tailCuts: cap(raw.tailCuts, Math.ceil(elapsed / 3)),
+    bestDelivery: 0,
+    captureBonus: 0,
+    bonusCuts: 0,
+    upsets: 0,
+    comboCuts: 0,
+    bestCombo: 0,
   };
+  // Lo que depende de un corte no puede superar los cortes de este mismo reporte
+  e.upsets = cap(raw.upsets, e.cuts);
+  e.comboCuts = cap(raw.comboCuts, e.cuts);
+  e.bonusCuts = cap(raw.bonusCuts, e.cuts);
+  e.bestCombo = e.cuts > 0 ? cap(raw.bestCombo, 10) : 0;
+  // Las capturas se cuentan al entregarlas: el extra y la mejor entrega dependen de ellas
+  e.bestDelivery = cap(raw.bestDelivery, Math.min(10, e.captures));
+  e.captureBonus = cap(raw.captureBonus, e.captures * MAX_CAPTURE_BONUS);
   const s = p.stats;
   const flightBefore = s.flightSeconds;
   s.flightSeconds += e.flightSeconds;
@@ -145,12 +202,29 @@ export function applyEvents(p: Progress, raw: Partial<GameEvents>, elapsed: numb
   s.cutBy += e.cutBy;
   s.stows += e.stows;
   s.fullLine += e.fullLine;
+  s.crits += e.crits;
+  s.upsets += e.upsets;
+  s.comboCuts += e.comboCuts;
+  s.bestCombo = Math.max(s.bestCombo, e.bestCombo);
+  s.tailCuts += e.tailCuts;
+  s.bestDelivery = Math.max(s.bestDelivery, e.bestDelivery);
+  s.captureBonus += e.captureBonus;
+  s.bonusCuts += e.bonusCuts;
   s.bestAltitude = Math.max(s.bestAltitude, e.bestAltitude);
   s.longestFlight = Math.max(s.longestFlight, e.longestFlight);
 
   // Por tiempo de vuelo se paga cada 10 s acumulados, sin perder los restos entre reportes
   const flightCoins = (Math.floor(s.flightSeconds / 10) - Math.floor(flightBefore / 10)) * REWARDS.flightPer10s;
-  let coins = flightCoins + e.cuts * REWARDS.cut + e.captures * REWARDS.capture;
+  let coins =
+    flightCoins +
+    e.cuts * REWARDS.cut +
+    e.captures * REWARDS.capture +
+    e.crits * REWARDS.crit +
+    e.upsets * REWARDS.upset +
+    e.comboCuts * REWARDS.comboCut +
+    e.tailCuts * REWARDS.tailCut +
+    e.bonusCuts * REWARDS.bonusCut +
+    e.captureBonus;
   const unlocked: AchievementDef[] = [];
   for (const a of ACHIEVEMENTS) {
     if (!p.achievements.includes(a.id) && a.done(s)) {

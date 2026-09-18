@@ -1,3 +1,4 @@
+import { onMapChange } from './maps';
 import type { V3 } from './vec';
 
 /** Parámetros del viento; mutables para el panel de debug. */
@@ -8,6 +9,9 @@ export const WIND = {
   baseAngle: 0, // rad, hacia dónde sopla en el plano xz
   angleVar: 0.5, // ±~30°
 };
+
+// Cada mapa trae su viento (el de El Cerro es el de arriba)
+onMapChange((m) => Object.assign(WIND, m.wind));
 
 export interface WindSample extends V3 {
   speed: number;

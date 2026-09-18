@@ -22,10 +22,36 @@ export const PHYS = {
   headingDamping: 2.5,
 };
 
+/** Maniobras rápidas (ver `stepKite`): tirón seco y dar cuerda rápido. */
+export const MANEUVER = {
+  tironTime: 0.3, // s que dura el tirón seco
+  tironCooldown: 0.7, // s entre un tirón y el siguiente
+  tironKick: 5, // rad/s que gira la punta de golpe hacia donde diriges
+  tironReel: 2.2, // el tirón recoge hilo a esta fracción de la velocidad normal del carrete
+  rapidRelease: 2.2, // dar cuerda rápido suelta hilo a esta fracción de la velocidad normal
+  rapidSlack: 3, // m de hilo flojo máximos al dar cuerda rápido
+};
+
+/** Efecto de la cola larga (cambucha, chonchón) mientras está entera, y cuando se la cortan. */
+export const TAIL = {
+  length: 4, // m de cola para los cortes
+  stability: 1.3, // estabilidad extra con la cola entera
+  calm: 0.7, // nervio con la cola entera
+  cutStability: 0.75, // un volantín hecho para cola, sin cola, se endereza peor...
+  cutNervio: 1.5, // ...y cabecea mucho más
+};
+
+/** 0 = nada, 1 = tirón seco, 2 = largada (dar cuerda rápido). */
+export type ManeuverKind = 0 | 1 | 2;
+
 export interface KiteInput {
   tirar: boolean;
   soltar: boolean;
   dirX: number; // -1..1
+  /** Tirón seco: se activa en el paso en que llega true (respeta el enfriamiento). */
+  tiron?: boolean;
+  /** Con soltar: da cuerda rápido (largada). */
+  rapido?: boolean;
 }
 
 export interface Loadout {
@@ -55,6 +81,16 @@ export interface KiteState {
   stowed: boolean;
   /** 0..100: se gasta al cruzarse con otro hilo; en 0 el hilo se corta. */
   integrity: number;
+  /** Última maniobra y hace cuánto empezó (s): sirve para los golpes críticos al cruzarse. */
+  maneuver: ManeuverKind;
+  maneuverAge: number;
+  /** s que le quedan al tirón seco en curso y hasta poder dar el siguiente. */
+  tironLeft: number;
+  tironCooldown: number;
+  /** Dando cuerda rápido en este momento. */
+  rapid: boolean;
+  /** Le cortaron la cola (solo importa en volantines con cola). */
+  tailCut: boolean;
 }
 
 export const breakThreshold = (line: LineDef) => line.resistencia * PHYS.breakFactor * PHYS.tensionRef;
@@ -82,6 +118,12 @@ export function createKite(anchor: V3, windDirX: number, windDirZ: number, seed 
     broken: false,
     stowed: false,
     integrity: 100,
+    maneuver: 0,
+    maneuverAge: 99,
+    tironLeft: 0,
+    tironCooldown: 0,
+    rapid: false,
+    tailCut: false,
   };
 }
 
@@ -95,6 +137,8 @@ export function stowKite(s: KiteState, anchor: V3) {
   s.lineLength = PHYS.minLine;
   s.tensionN = s.tension = s.stress = 0;
   s.heading = s.spin = 0;
+  s.tironLeft = 0;
+  s.rapid = false;
 }
 
 /** Turbulencia suave y determinista (-1..1) propia de cada volantín. */
@@ -127,17 +171,38 @@ export function stepKite(
     return;
   }
 
+  // Maniobras: el tirón seco gira la punta de golpe y recoge hilo rápido por un instante;
+  // dar cuerda rápido (largada) suelta hilo sin esperar a que el volantín tire.
+  s.maneuverAge += dt;
+  s.tironCooldown = Math.max(0, s.tironCooldown - dt);
+  if (input.tiron && !s.broken && !s.grounded && s.tironCooldown <= 0) {
+    s.tironLeft = MANEUVER.tironTime;
+    s.tironCooldown = MANEUVER.tironCooldown;
+    s.maneuver = 1;
+    s.maneuverAge = 0;
+    const dir = Math.abs(input.dirX) > 0.15 ? Math.sign(input.dirX) : 0;
+    s.spin += dir * MANEUVER.tironKick * kite.agilidad;
+  }
+  const tironing = s.tironLeft > 0 && !s.broken;
+  if (s.tironLeft > 0) s.tironLeft -= dt;
+
   // Carrete: tirar recoge a velocidad fija; soltar deja que el volantín se lleve el hilo (ver restricción)
-  const reelSpeed = PHYS.reelBase * reel.speed;
-  const releasing = input.soltar && !input.tirar && !s.broken;
+  const reelSpeed = PHYS.reelBase * reel.speed * (tironing ? MANEUVER.tironReel : 1);
+  const releasing = input.soltar && !input.tirar && !tironing && !s.broken;
+  const rapid = releasing && !!input.rapido;
+  if (rapid && !s.rapid) {
+    s.maneuver = 2;
+    s.maneuverAge = 0;
+  }
+  s.rapid = rapid;
   let rate = 0;
-  if (!s.broken && input.tirar && !input.soltar) {
+  if (!s.broken && (tironing || (input.tirar && !input.soltar))) {
     const next = Math.max(PHYS.minLine, s.lineLength - reelSpeed * dt);
     rate = (next - s.lineLength) / dt;
     s.lineLength = next;
   }
 
-  const aoaTarget = input.tirar ? 1 : input.soltar ? 0.5 : 0.7;
+  const aoaTarget = tironing ? 1.25 : rapid ? 0.3 : input.tirar ? 1 : input.soltar ? 0.5 : 0.7;
   s.aoa += (aoaTarget - s.aoa) * Math.min(1, dt * 4);
 
   const rx = wind.x - s.vel.x;
@@ -157,12 +222,17 @@ export function stepKite(
   } else {
     const authority = clamp(sp / 6, 0, 1.6);
     const grip = 0.25 + 0.75 * s.tension;
+    // La cola entera lo calma; si se la cortaron, cabecea
+    const tailStab = kite.cola ? (s.tailCut ? TAIL.cutStability : TAIL.stability) : 1;
+    const tailNerve = kite.cola ? (s.tailCut ? TAIL.cutNervio : TAIL.calm) : 1;
     // Dirigir corre el ángulo al que los tirantes llevan la punta; los ágiles giran más y más rápido
     const steer = clamp(input.dirX, -1, 1);
-    const target = steer * (0.5 + 0.2 * bridle.giro);
-    const stiffness = bridle.estabilidad * PHYS.headingRestore + bridle.giro * PHYS.headingSteer * Math.abs(steer);
+    const target = steer * (0.5 + 0.2 * bridle.giro) * Math.sqrt(kite.agilidad);
+    // La agilidad acelera toda la respuesta de la punta (enderezarse y girar)
+    const stiffness =
+      (bridle.estabilidad * kite.estabilidad * tailStab * PHYS.headingRestore + bridle.giro * PHYS.headingSteer * Math.abs(steer)) * kite.agilidad;
     const restore = -stiffness * Math.sin(s.heading - target) * authority * (0.5 + 0.5 * grip);
-    const noise = bridle.nervio * PHYS.headingNoise * turbulence(s.time, s.seed) * authority * (1.2 - 0.6 * grip);
+    const noise = ((bridle.nervio * tailNerve) / kite.estabilidad) * PHYS.headingNoise * turbulence(s.time, s.seed) * authority * (1.2 - 0.6 * grip);
     s.spin += (restore + noise - PHYS.headingDamping * s.spin) * dt;
   }
   s.heading = wrapAngle(s.heading + s.spin * dt);
@@ -190,9 +260,11 @@ export function stepKite(
       const sz = dx * ly - dy * lx;
       const c = Math.cos(s.heading);
       const sn = Math.sin(s.heading);
-      lx = lx * c + sx * sn;
-      ly = ly * c + sy * sn;
-      lz = lz * c + sz * sn;
+      // La velocidad del volantín agranda el empuje de lado cuando la punta se inclina
+      const side = sn * kite.velocidad;
+      lx = lx * c + sx * side;
+      ly = ly * c + sy * side;
+      lz = lz * c + sz * side;
     }
     const q = 0.5 * PHYS.rho * kite.area * sp * sp;
     const cl = kite.cl * (0.5 + 0.7 * s.aoa) * PHYS.liftScale;
@@ -218,7 +290,12 @@ export function stepKite(
     const uy0 = s.pos.y - anchor.y;
     const uz0 = s.pos.z - anchor.z;
     const dist = Math.hypot(ux0, uy0, uz0);
-    if (releasing && dist > s.lineLength) {
+    if (rapid) {
+      // Largada: el hilo sale rápido aunque el volantín no tire (queda un poco flojo)
+      const next = Math.min(reel.maxLine, s.lineLength + PHYS.releaseSpeed * reel.speed * MANEUVER.rapidRelease * dt, Math.max(s.lineLength, dist + MANEUVER.rapidSlack));
+      rate = (next - s.lineLength) / dt;
+      s.lineLength = next;
+    } else if (releasing && dist > s.lineLength) {
       // El hilo sale solo si el volantín tira; el roce del carrete lo frena, así el hilo no queda flojo
       const cap = PHYS.releaseSpeed * reel.speed * (0.25 + 0.75 * s.tension);
       const next = Math.min(reel.maxLine, s.lineLength + Math.min(dist - s.lineLength, cap * dt));

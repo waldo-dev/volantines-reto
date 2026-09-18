@@ -1,9 +1,66 @@
 import * as THREE from 'three';
-import { POND, groundHeight, type V3 } from '@volantines/shared';
+import { cableSegments, groundHeight, pondOf, type MapDef, type MapId, type V3 } from '@volantines/shared';
 import { instanced, loadTexture } from '../assets';
 
-const SKY_TOP = new THREE.Color('#3f86d4');
-const SKY_HORIZON = new THREE.Color('#cfe5f5');
+/** Colores y luz de cada mapa. */
+interface Theme {
+  skyTop: string;
+  skyHorizon: string;
+  fogNear: number;
+  sun: { color: string; intensity: number; x: number; y: number; z: number };
+  hemi: { sky: string; ground: string; intensity: number };
+  /** Tinte del pasto (se multiplica por la textura). */
+  grass: [number, number, number];
+  andes: boolean;
+}
+
+const THEMES: Record<MapId, Theme> = {
+  cerro: {
+    skyTop: '#3f86d4',
+    skyHorizon: '#cfe5f5',
+    fogNear: 200,
+    sun: { color: '#fff4de', intensity: 2.2, x: -60, y: 120, z: 40 },
+    hemi: { sky: '#d8ecff', ground: '#5d7b3a', intensity: 1.1 },
+    grass: [1, 1, 1],
+    andes: true,
+  },
+  parque: {
+    skyTop: '#3a8ae0',
+    skyHorizon: '#d9ecfa',
+    fogNear: 220,
+    sun: { color: '#fff4de', intensity: 2.3, x: -60, y: 130, z: 30 },
+    hemi: { sky: '#dcefff', ground: '#6a8a3c', intensity: 1.15 },
+    grass: [0.95, 1.05, 0.9],
+    andes: true,
+  },
+  campo: {
+    skyTop: '#2f3f78',
+    skyHorizon: '#f6a466',
+    fogNear: 160,
+    sun: { color: '#ffae66', intensity: 1.9, x: -160, y: 45, z: 60 },
+    hemi: { sky: '#ffd2a8', ground: '#4d5a2c', intensity: 0.95 },
+    grass: [1.12, 0.98, 0.72],
+    andes: true,
+  },
+  playa: {
+    skyTop: '#2f8ee6',
+    skyHorizon: '#dff2fb',
+    fogNear: 260,
+    sun: { color: '#fffaf0', intensity: 2.5, x: -40, y: 140, z: 50 },
+    hemi: { sky: '#e6f5ff', ground: '#c9b58a', intensity: 1.2 },
+    grass: [1.05, 1.05, 0.9],
+    andes: false,
+  },
+  valparaiso: {
+    skyTop: '#4a86c8',
+    skyHorizon: '#d6e4ee',
+    fogNear: 170,
+    sun: { color: '#fff1d8', intensity: 2.1, x: -70, y: 110, z: 50 },
+    hemi: { sky: '#d6e6f5', ground: '#6b6a4a', intensity: 1.1 },
+    grass: [1.02, 0.98, 0.88],
+    andes: true,
+  },
+};
 
 /** Generador pseudoaleatorio con semilla, para que el mundo sea igual para todos. */
 function mulberry32(seed: number) {
@@ -18,12 +75,35 @@ function mulberry32(seed: number) {
 
 // --- Trazado del mundo ---
 type P2 = [number, number];
-/** Senderos de tierra: del cerro a la fonda, a la laguna y al pueblo. */
-const PATHS: P2[][] = [
+/** Senderos de tierra de El Cerro: del cerro a la fonda, a la laguna y al pueblo. */
+const CERRO_PATHS: P2[][] = [
   [[0, 0], [-18, 16], [-40, 34], [-62, 44]],
   [[0, 0], [22, -18], [50, -40], [72, -58]],
   [[-40, 34], [-22, 70], [10, 100], [55, 118], [100, 126]],
 ];
+const MAP_PATHS: Record<MapId, P2[][]> = {
+  cerro: CERRO_PATHS,
+  parque: [
+    [[-140, -12], [140, -12]],
+    [[-140, 12], [140, 12]],
+    [[-12, -140], [-12, 140]],
+    [[-70, 60], [-12, 12]],
+  ],
+  campo: [
+    [[0, 0], [30, 30], [60, 80], [70, 160]],
+    [[-160, 50], [-60, 40], [30, 30], [180, 20]],
+  ],
+  playa: [[[0, 0], [60, 0], [140, -10]]],
+  valparaiso: [
+    [[0, 0], [40, -20], [80, -50]],
+    [[0, 0], [45, 30], [95, 70]],
+    [[-60, -140], [-60, 140]],
+  ],
+};
+/** Senderos del mapa que se está construyendo. */
+let PATHS: P2[][] = CERRO_PATHS;
+/** Franja de arena desde la orilla del mar: [inicio del pasto, pasto completo] en x (null sin mar). */
+let sandy: [number, number] | null = null;
 const FONDA = { x: -66, z: 58 };
 const VILLAGE = { x: 70, z: 125 };
 const SPAWN_CLEAR = 16;
@@ -41,7 +121,10 @@ export function distToPath(x: number, z: number) {
   return d;
 }
 
-const inPond = (x: number, z: number, margin = 0) => Math.hypot(x - POND.x, z - POND.z) < POND.r + margin;
+const inPond = (x: number, z: number, margin = 0) => {
+  const p = pondOf();
+  return !!p && Math.hypot(x - p.x, z - p.z) < p.r + margin;
+};
 
 export interface WorldQuality {
   shadows: boolean;
@@ -51,14 +134,26 @@ export interface WorldQuality {
 export interface World {
   sun: THREE.DirectionalLight;
   update(dt: number, wind: V3 & { angle: number; speed: number }, focus: V3, time: number): void;
+  /** Saca el mundo de la escena (para cambiar de mapa). */
+  dispose(): void;
 }
 
-export function createWorld(scene: THREE.Scene, q: WorldQuality): World {
+/** Construye el mundo del mapa (que ya tiene que estar activo con `useMap`). */
+export function createWorld(scene: THREE.Scene, q: WorldQuality, map: MapDef): World {
   const rand = mulberry32(18_09);
   const density = q.mobile ? 0.55 : 1;
+  const theme = THEMES[map.id];
+  const SKY_TOP = new THREE.Color(theme.skyTop);
+  const SKY_HORIZON = new THREE.Color(theme.skyHorizon);
+  PATHS = MAP_PATHS[map.id];
+  // La playa es toda arena hasta el médano; en Valparaíso solo una franja en la costa
+  sandy = map.sea ? (map.id === 'playa' ? [map.sea.x + 90, map.sea.x + 125] : [map.sea.x + 12, map.sea.x + 26]) : null;
+  // Todo el mundo cuelga de este grupo: cambiar de mapa es sacarlo y armar otro
+  const root = new THREE.Group();
+  scene.add(root);
 
   scene.background = SKY_HORIZON.clone();
-  scene.fog = new THREE.Fog(SKY_HORIZON, 200, 1150);
+  scene.fog = new THREE.Fog(SKY_HORIZON, theme.fogNear, 1150);
 
   // Cielo degradado
   const sky = new THREE.Mesh(
@@ -74,12 +169,13 @@ export function createWorld(scene: THREE.Scene, q: WorldQuality): World {
     }),
   );
   sky.renderOrder = -1;
-  scene.add(sky);
+  root.add(sky);
 
   // Luces
-  scene.add(new THREE.HemisphereLight('#d8ecff', '#5d7b3a', 1.1));
-  const sun = new THREE.DirectionalLight('#fff4de', 2.2);
-  sun.position.set(-60, 120, 40);
+  root.add(new THREE.HemisphereLight(theme.hemi.sky, theme.hemi.ground, theme.hemi.intensity));
+  const sun = new THREE.DirectionalLight(theme.sun.color, theme.sun.intensity);
+  const sunOffset = new THREE.Vector3(theme.sun.x, theme.sun.y, theme.sun.z);
+  sun.position.copy(sunOffset);
   if (q.shadows) {
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -91,30 +187,37 @@ export function createWorld(scene: THREE.Scene, q: WorldQuality): World {
     sun.shadow.bias = -0.0005;
     sun.shadow.normalBias = 0.02;
   }
-  scene.add(sun, sun.target);
+  root.add(sun, sun.target);
 
-  createTerrain(scene, q);
-  createWater(scene);
-  createAndes(scene, rand);
-  const clouds = createClouds(scene, rand);
+  createTerrain(root, q, theme);
+  createWater(root, map);
+  if (theme.andes) createAndes(root, rand);
+  const clouds = createClouds(root, rand);
 
-  // Banderas chilenas: una en el cerro y dos en la fonda. Muestran hacia dónde sopla el viento.
-  const flags = [
-    createFlag(6, -14, 6),
-    createFlag(FONDA.x - 10, FONDA.z - 8, 7),
-    createFlag(FONDA.x + 12, FONDA.z + 6, 7),
-  ];
-  for (const f of flags) scene.add(f.group);
-  createGarlands(scene);
+  // Banderas chilenas: muestran hacia dónde sopla el viento
+  const flagSpots: [number, number, number][] =
+    map.id === 'cerro' ? [[6, -14, 6], [FONDA.x - 10, FONDA.z - 8, 7], [FONDA.x + 12, FONDA.z + 6, 7]] : [[6, -14, 6], [-8, 14, 6]];
+  const flags = flagSpots.map(([x, z, h]) => createFlag(x, z, h));
+  for (const f of flags) root.add(f.group);
+  if (map.id === 'cerro') createGarlands(root, FONDA);
 
-  void populate(scene, q, rand, density);
+  const bonus = map.bonus ? createBonusZone(root, map.bonus) : null;
+  if (map.cables.length) createCables(root, map);
+
+  if (map.id === 'cerro') void populate(root, q, rand, density);
+  else void populateMap(root, q, rand, density, map);
 
   return {
     sun,
+    dispose() {
+      scene.remove(root);
+      root.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+    },
     update(dt, wind, focus, time) {
       // La luz del sol sigue al jugador para que las sombras cercanas se vean nítidas
-      sun.position.set(focus.x - 60, focus.y + 120, focus.z + 40);
+      sun.position.set(focus.x + sunOffset.x, focus.y + sunOffset.y, focus.z + sunOffset.z);
       sun.target.position.set(focus.x, focus.y, focus.z);
+      bonus?.update(time);
       for (const c of clouds) {
         c.position.x += wind.x * dt * 0.8;
         c.position.z += wind.z * dt * 0.8;
@@ -134,7 +237,7 @@ export function createWorld(scene: THREE.Scene, q: WorldQuality): World {
  * Terreno en dos mallas: una fina cerca del centro (senderos nítidos) y una gruesa hasta el horizonte.
  * Textura de pasto con mezcla de tierra en los senderos (atributo `pathMask`).
  */
-function createTerrain(scene: THREE.Scene, q: WorldQuality) {
+function createTerrain(scene: THREE.Object3D, q: WorldQuality, theme: Theme) {
   const grassFallback = new THREE.DataTexture(new Uint8Array([120, 170, 70, 255]), 1, 1);
   grassFallback.needsUpdate = true;
   const dirtFallback = new THREE.DataTexture(new Uint8Array([190, 160, 110, 255]), 1, 1);
@@ -184,12 +287,14 @@ function createTerrain(scene: THREE.Scene, q: WorldQuality) {
       const n = 0.5 + 0.5 * Math.sin(x * 0.045 + Math.cos(z * 0.035) * 2) * Math.cos(z * 0.06);
       const dry = y > 6.5 ? Math.min(1, (y - 6.5) / 3) * 0.25 : 0;
       const shore = inPond(x, z, 6) ? 0.25 : 0;
-      colors[i * 3] = 0.9 + 0.18 * n + dry + shore;
-      colors[i * 3 + 1] = 0.95 + 0.1 * n + dry * 0.6 + shore * 0.5;
-      colors[i * 3 + 2] = 0.85 + 0.05 * n + shore * 0.2;
+      colors[i * 3] = (0.9 + 0.18 * n + dry + shore) * theme.grass[0];
+      colors[i * 3 + 1] = (0.95 + 0.1 * n + dry * 0.6 + shore * 0.5) * theme.grass[1];
+      colors[i * 3 + 2] = (0.85 + 0.05 * n + shore * 0.2) * theme.grass[2];
       const d = distToPath(x, z);
       mask[i] = hole === 0 ? 1 - THREE.MathUtils.smoothstep(d, 1.2, 3.2) : 0;
       if (inPond(x, z, 3)) mask[i] = Math.max(mask[i], 0.7); // orilla de tierra
+      // Arena: desde el mar hasta un poco pasado el lugar para encumbrar
+      if (sandy) mask[i] = Math.max(mask[i], 1 - THREE.MathUtils.smoothstep(x, sandy[0], sandy[1]));
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.setAttribute('pathMask', new THREE.BufferAttribute(mask, 1));
@@ -202,17 +307,25 @@ function createTerrain(scene: THREE.Scene, q: WorldQuality) {
   buildGrid(960, 160, INNER);
 }
 
-function createWater(scene: THREE.Scene) {
-  const water = new THREE.Mesh(
-    new THREE.CircleGeometry(POND.r + 2, 40),
-    new THREE.MeshPhongMaterial({ color: '#4d97c9', shininess: 90, specular: '#cfe8ff', transparent: true, opacity: 0.88 }),
-  );
-  water.rotation.x = -Math.PI / 2;
-  water.position.set(POND.x, POND.level, POND.z);
-  scene.add(water);
+function createWater(scene: THREE.Object3D, map: MapDef) {
+  const mat = new THREE.MeshPhongMaterial({ color: '#4d97c9', shininess: 90, specular: '#cfe8ff', transparent: true, opacity: 0.88 });
+  if (map.pond) {
+    const water = new THREE.Mesh(new THREE.CircleGeometry(map.pond.r + 2, 40), mat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(map.pond.x, map.pond.level, map.pond.z);
+    scene.add(water);
+  }
+  if (map.sea) {
+    // El mar: un plano grande desde la orilla hacia -x
+    const W = 2400;
+    const sea = new THREE.Mesh(new THREE.PlaneGeometry(W, W), new THREE.MeshPhongMaterial({ color: '#2f7fb8', shininess: 110, specular: '#d8f0ff' }));
+    sea.rotation.x = -Math.PI / 2;
+    sea.position.set(map.sea.x + 20 - W / 2, map.sea.level, 0);
+    scene.add(sea);
+  }
 }
 
-function createAndes(scene: THREE.Scene, rand: () => number) {
+function createAndes(scene: THREE.Object3D, rand: () => number) {
   const mountainMat = new THREE.MeshLambertMaterial({ color: '#7d8fa8', flatShading: true });
   const snowMat = new THREE.MeshLambertMaterial({ color: '#f3f6fa', flatShading: true });
   for (let i = 0; i < 16; i++) {
@@ -231,7 +344,7 @@ function createAndes(scene: THREE.Scene, rand: () => number) {
   }
 }
 
-function createClouds(scene: THREE.Scene, rand: () => number) {
+function createClouds(scene: THREE.Object3D, rand: () => number) {
   const cloudMat = new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#dfe9f3', emissiveIntensity: 0.6, flatShading: true });
   const cloudGeo = new THREE.IcosahedronGeometry(1, 1);
   const clouds: THREE.Group[] = [];
@@ -252,8 +365,8 @@ function createClouds(scene: THREE.Scene, rand: () => number) {
   return clouds;
 }
 
-/** Guirnaldas de banderines tricolor sobre la fonda, en triángulos instanciados. */
-function createGarlands(scene: THREE.Scene) {
+/** Guirnaldas de banderines tricolor sobre una fonda, en triángulos instanciados. */
+function createGarlands(scene: THREE.Object3D, FONDA: { x: number; z: number }) {
   const tri = new THREE.BufferGeometry();
   tri.setAttribute('position', new THREE.Float32BufferAttribute([-0.22, 0, 0, 0.22, 0, 0, 0, -0.45, 0], 3));
   tri.computeVertexNormals();
@@ -312,7 +425,7 @@ function createGarlands(scene: THREE.Scene) {
 
 // --- Vegetación, casas y la fonda (modelos CC0 de Kenney, instanciados) ---
 
-async function populate(scene: THREE.Scene, q: WorldQuality, rand: () => number, density: number) {
+async function populate(scene: THREE.Object3D, q: WorldQuality, rand: () => number, density: number) {
   const tmpQ = new THREE.Quaternion();
   const tmpS = new THREE.Vector3();
   const tmpP = new THREE.Vector3();
@@ -388,10 +501,11 @@ async function populate(scene: THREE.Scene, q: WorldQuality, rand: () => number,
   jobs.push(add('models/nature/rock_smallA.glb', rocks.slice(34).map(([x, z]) => at(x, z, 3 + rand() * 2))));
   // Rocas alrededor de la laguna
   const shore: THREE.Matrix4[] = [];
-  for (let i = 0; i < 14; i++) {
+  const pond = pondOf();
+  for (let i = 0; pond && i < 14; i++) {
     const a = rand() * Math.PI * 2;
-    const r = POND.r + 1 + rand() * 3;
-    shore.push(at(POND.x + Math.cos(a) * r, POND.z + Math.sin(a) * r, 2 + rand() * 3, undefined, -0.3));
+    const r = pond.r + 1 + rand() * 3;
+    shore.push(at(pond.x + Math.cos(a) * r, pond.z + Math.sin(a) * r, 2 + rand() * 3, undefined, -0.3));
   }
   jobs.push(add('models/nature/rock_smallC.glb', shore));
 
@@ -537,4 +651,272 @@ export function drawStar(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
   }
   ctx.closePath();
   ctx.fill();
+}
+
+// --- Zona de bono y cables (fase 4) ---
+
+/** Zona de bono: un cilindro dorado y transparente en el cielo, con anillos que giran. */
+function createBonusZone(scene: THREE.Object3D, b: NonNullable<MapDef['bonus']>) {
+  const group = new THREE.Group();
+  group.position.set(b.x, b.y0, b.z);
+  const h = b.y1 - b.y0;
+  const wallMat = new THREE.MeshBasicMaterial({ color: '#ffd84a', transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide });
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(b.r, b.r, h, 40, 1, true), wallMat);
+  wall.position.y = h / 2;
+  wall.renderOrder = 3;
+  const ringMat = new THREE.MeshBasicMaterial({ color: '#ffd84a', transparent: true, opacity: 0.7, depthWrite: false });
+  const rings = [0, h].map((y) => {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(b.r, 0.25, 6, 48), ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = y;
+    group.add(ring);
+    return ring;
+  });
+  group.add(wall);
+  scene.add(group);
+  return {
+    update(time: number) {
+      wallMat.opacity = 0.08 + 0.05 * Math.sin(time * 2);
+      for (const r of rings) r.rotation.z = time * 0.3;
+    },
+  };
+}
+
+/** Postes y cables del tendido eléctrico (los mismos tramos que usa la física). */
+function createCables(scene: THREE.Object3D, map: MapDef) {
+  const segs = cableSegments(map, groundHeight);
+  const poleMat = new THREE.MeshLambertMaterial({ color: '#5b4a3a' });
+  const wireMat = new THREE.LineBasicMaterial({ color: '#1d1d1d' });
+  const poles = new Map<string, V3>();
+  for (const s of segs) for (const p of [s.a, s.b]) poles.set(`${p.x.toFixed(1)},${p.z.toFixed(1)}`, p);
+  for (const p of poles.values()) {
+    const base = groundHeight(p.x, p.z);
+    const h = p.y - base + 1;
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, h, 6), poleMat);
+    pole.position.set(p.x, base + h / 2, p.z);
+    pole.castShadow = true;
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.12), poleMat);
+    arm.position.set(p.x, p.y + 0.2, p.z);
+    scene.add(pole, arm);
+  }
+  for (const s of segs) {
+    // Un poco de comba para que se vea como cable (la física usa el tramo recto)
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 12; i++) {
+      const t = i / 12;
+      pts.push(new THREE.Vector3(s.a.x + (s.b.x - s.a.x) * t, s.a.y + (s.b.y - s.a.y) * t - Math.sin(t * Math.PI) * 0.5, s.a.z + (s.b.z - s.a.z) * t));
+    }
+    scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), wireMat));
+  }
+}
+
+// --- Decoración de los mapas nuevos ---
+
+async function populateMap(scene: THREE.Object3D, q: WorldQuality, rand: () => number, density: number, map: MapDef) {
+  const tmpQ = new THREE.Quaternion();
+  const tmpS = new THREE.Vector3();
+  const tmpP = new THREE.Vector3();
+  const at = (x: number, z: number, scale: number | [number, number, number], yaw = rand() * Math.PI * 2, lift = 0) => {
+    tmpQ.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
+    if (typeof scale === 'number') tmpS.setScalar(scale);
+    else tmpS.set(...scale);
+    return new THREE.Matrix4().compose(tmpP.set(x, groundHeight(x, z) + lift, z), tmpQ, tmpS);
+  };
+  const scatter = (count: number, radius: number, ok: (x: number, z: number) => boolean) => {
+    const out: P2[] = [];
+    for (let tries = 0; out.length < count && tries < count * 20; tries++) {
+      const a = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand()) * radius;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      if (ok(x, z)) out.push([x, z]);
+    }
+    return out;
+  };
+  const dry = (x: number, z: number) => !inPond(x, z, 4) && (!map.sea || x > map.sea.x + 8);
+  const free = (clear: number, pathGap: number) => (x: number, z: number) => Math.hypot(x, z) > clear && distToPath(x, z) > pathGap && dry(x, z);
+  const jobs: Promise<void>[] = [];
+  const add = (path: string, mats: THREE.Matrix4[], shadows = q.shadows, colors?: THREE.Color[]) =>
+    jobs.push(instanced(path, mats, shadows, colors).then((g) => void scene.add(g)));
+
+  const trees = ['tree_oak', 'tree_default', 'tree_detailed', 'tree_fat', 'tree_pineDefaultA'];
+  const scatterTrees = (count: number, radius: number, clear: number, ok: (x: number, z: number) => boolean = () => true) => {
+    const spots = scatter(Math.round(count * density), radius, (x, z) => free(clear, 6)(x, z) && ok(x, z));
+    trees.forEach((name, t) => add(`models/nature/${name}.glb`, spots.filter((_, i) => i % trees.length === t).map(([x, z]) => at(x, z, 4.5 + rand() * 2.5))));
+  };
+  const grassAndFlowers = (radius: number, ok: (x: number, z: number) => boolean = () => true) => {
+    const grass = scatter(Math.round(500 * density), radius, (x, z) => distToPath(x, z) > 2 && dry(x, z) && ok(x, z));
+    add('models/nature/grass.glb', grass.slice(0, grass.length / 2).map(([x, z]) => at(x, z, 2.5 + rand() * 1.5)), false);
+    add('models/nature/grass_large.glb', grass.slice(grass.length / 2).map(([x, z]) => at(x, z, 2.5 + rand() * 1.5)), false);
+    const flowers = ['flower_redA', 'flower_yellowA', 'flower_purpleA'];
+    const patches = scatter(Math.round(20 * density), radius, (x, z) => free(8, 2.5)(x, z) && ok(x, z));
+    flowers.forEach((name, k) => {
+      const mats: THREE.Matrix4[] = [];
+      patches.forEach(([px, pz], p) => {
+        if (p % 3 !== k) return;
+        for (let i = 0; i < 8; i++) mats.push(at(px + (rand() - 0.5) * 7, pz + (rand() - 0.5) * 7, 2.2 + rand()));
+      });
+      add(`models/nature/${name}.glb`, mats, false);
+    });
+  };
+  const houseTypes = ['a', 'c', 'f', 'h', 'k', 'm', 'p', 's'];
+  const houses = (plan: { x: number; z: number; yaw: number }[], colors?: THREE.Color[]) => {
+    houseTypes.forEach((type, t) => {
+      const idx = plan.map((_, i) => i).filter((i) => i % houseTypes.length === t);
+      add(
+        `models/houses/building-type-${type}.glb`,
+        idx.map((i) => at(plan[i].x, plan[i].z, 7, plan[i].yaw, -0.3)),
+        q.shadows,
+        colors && idx.map((i) => colors[i]),
+      );
+    });
+  };
+  const alamoRow = (ax: number, az: number, bx: number, bz: number, gap = 9, side = 5.5) => {
+    const mats: THREE.Matrix4[] = [];
+    const len = Math.hypot(bx - ax, bz - az);
+    const nx = -(bz - az) / len;
+    const nz = (bx - ax) / len;
+    for (let d = 4; d < len; d += gap) {
+      const x = ax + ((bx - ax) * d) / len;
+      const z = az + ((bz - az) * d) / len;
+      for (const s of [-1, 1]) {
+        const k = 3.6 + rand() * 0.8;
+        const tx = x + nx * s * side;
+        const tz = z + nz * s * side;
+        // Nada de álamos en el lugar para encumbrar
+        if (dry(tx, tz) && Math.hypot(tx, tz) > 32) mats.push(at(tx, tz, [k, k * 2.4, k]));
+      }
+    }
+    add('models/nature/tree_cone.glb', mats);
+  };
+
+  if (map.id === 'parque') {
+    // Fondas con ramadas, fogata y banderines, repartidas por el parque
+    const fondas = [
+      { x: -55, z: -40 },
+      { x: 30, z: -45 },
+      { x: -50, z: 38 },
+      { x: 40, z: 45 },
+    ];
+    const tents: THREE.Matrix4[] = [];
+    for (const f of fondas) {
+      tents.push(at(f.x - 7, f.z - 4, 7, 0.3), at(f.x + 7, f.z - 3, 7, -0.2), at(f.x, f.z + 8, 7, Math.PI));
+      createGarlands(scene, f);
+    }
+    add('models/nature/tent_detailedOpen.glb', tents);
+    add('models/nature/campfire_stones.glb', fondas.map((f) => at(f.x, f.z, 3)));
+    add('models/nature/log.glb', fondas.flatMap((f) => [at(f.x - 3, f.z + 1.5, 3, 0.2), at(f.x + 3, f.z - 1.5, 3, 1.4)]));
+    add('models/nature/sign.glb', [at(-18, 18, 3, 0.8), at(18, -18, 3, -0.8)]);
+    const nearFonda = (x: number, z: number) => fondas.some((f) => Math.hypot(x - f.x, z - f.z) < 20);
+    scatterTrees(170, 330, 70, (x, z) => !nearFonda(x, z));
+    alamoRow(-140, -12, 140, -12, 12, 9);
+    const pond = map.pond!;
+    const shore: THREE.Matrix4[] = [];
+    for (let i = 0; i < 12; i++) {
+      const a = rand() * Math.PI * 2;
+      const r = pond.r + 1 + rand() * 3;
+      shore.push(at(pond.x + Math.cos(a) * r, pond.z + Math.sin(a) * r, 2 + rand() * 3, undefined, -0.3));
+    }
+    add('models/nature/rock_smallC.glb', shore);
+    grassAndFlowers(160, (x, z) => !nearFonda(x, z));
+  } else if (map.id === 'campo') {
+    for (const path of PATHS) for (let i = 0; i < path.length - 1; i++) alamoRow(path[i][0], path[i][1], path[i + 1][0], path[i + 1][1]);
+    // Potreros con choclos y cerco
+    const fences: THREE.Matrix4[] = [];
+    const corn: THREE.Matrix4[] = [];
+    const fields = [
+      { x: 40, z: 45, w: 40, d: 26 },
+      { x: -80, z: -60, w: 50, d: 30 },
+      { x: 90, z: -70, w: 36, d: 28 },
+    ];
+    for (const f of fields) {
+      const edge = (ax: number, az: number, bx: number, bz: number) => {
+        const len = Math.hypot(bx - ax, bz - az);
+        const yaw = -Math.atan2(bz - az, bx - ax);
+        for (let d = 1.5; d < len; d += 3) fences.push(at(ax + ((bx - ax) * d) / len, az + ((bz - az) * d) / len, 3, yaw));
+      };
+      edge(f.x, f.z, f.x + f.w, f.z);
+      edge(f.x + f.w, f.z, f.x + f.w, f.z + f.d);
+      edge(f.x + f.w, f.z + f.d, f.x, f.z + f.d);
+      edge(f.x, f.z + f.d, f.x, f.z);
+      for (let x = f.x + 3; x < f.x + f.w - 2; x += 2.6 / density) for (let z = f.z + 3; z < f.z + f.d - 2; z += 3) corn.push(at(x, z, 1.7 + rand() * 0.3));
+    }
+    add('models/nature/fence_simple.glb', fences);
+    add('models/nature/crops_cornStageD.glb', corn, false);
+    const inField = (x: number, z: number) => fields.some((f) => x > f.x - 4 && x < f.x + f.w + 4 && z > f.z - 4 && z < f.z + f.d + 4);
+    houses([
+      { x: -40, z: 90, yaw: 0.4 },
+      { x: 120, z: 60, yaw: 2 },
+      { x: -120, z: -20, yaw: 1.2 },
+      { x: 60, z: -130, yaw: 3 },
+    ]);
+    scatterTrees(110, 330, 30, (x, z) => !inField(x, z));
+    const bushes = scatter(Math.round(80 * density), 260, (x, z) => free(20, 3)(x, z) && !inField(x, z));
+    add('models/nature/plant_bush.glb', bushes.map(([x, z]) => at(x, z, 4 + rand() * 3)));
+    grassAndFlowers(170, (x, z) => !inField(x, z));
+  } else if (map.id === 'playa') {
+    const sea = map.sea!;
+    // Rocas en la orilla y quitasoles de colores en la arena
+    const rocks: THREE.Matrix4[] = [];
+    for (let z = -220; z < 220; z += 9 + rand() * 12) rocks.push(at(sea.x + 6 + rand() * 10, z, 3 + rand() * 4, undefined, -0.4));
+    add('models/nature/rock_largeA.glb', rocks.filter((_, i) => i % 2 === 0));
+    add('models/nature/rock_largeB.glb', rocks.filter((_, i) => i % 2 === 1));
+    createUmbrellas(scene, rand, sea.x + 20, 45, q.shadows);
+    add('models/nature/tent_detailedOpen.glb', [at(25, -40, 6, 1.2), at(30, 42, 6, -1.4), at(-10, -70, 6, 0.6)]);
+    // Pasto, árboles y casas pasado el médano
+    const inland = (x: number) => x > 110;
+    houses(Array.from({ length: 9 }, (_, i) => ({ x: 150 + (i % 3) * 18 + rand() * 4, z: -40 + Math.floor(i / 3) * 30 + rand() * 4, yaw: -Math.PI / 2 })));
+    scatterTrees(90, 330, 30, (x) => inland(x) && x > 200);
+    grassAndFlowers(260, (x) => inland(x));
+  } else if (map.id === 'valparaiso') {
+    // Casas de colores trepando los cerros
+    const palette = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a', '#8ecae6', '#ffb4a2', '#b5e48c', '#cdb4db', '#ffffff'].map((c) => new THREE.Color(c));
+    const plan: { x: number; z: number; yaw: number }[] = [];
+    const colors: THREE.Color[] = [];
+    for (const hill of map.hills.slice(1)) {
+      const rings = q.mobile ? 2 : 3;
+      for (let ring = 0; ring < rings; ring++) {
+        const r = hill.r * (0.35 + ring * 0.3);
+        const n = Math.round((r / 9) * density);
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2 + ring * 0.4 + rand() * 0.2;
+          const x = hill.x + Math.cos(a) * r;
+          const z = hill.z + Math.sin(a) * r;
+          if (Math.hypot(x, z) < 34 || distToPath(x, z) < 6 || !dry(x, z)) continue;
+          // Mirando cerro abajo
+          plan.push({ x, z, yaw: -a + Math.PI / 2 });
+          colors.push(palette[Math.floor(rand() * palette.length)]);
+        }
+      }
+    }
+    houses(plan, colors);
+    scatterTrees(60, 300, 30);
+    const shoreRocks: THREE.Matrix4[] = [];
+    for (let z = -200; z < 200; z += 14 + rand() * 10) shoreRocks.push(at(map.sea!.x + 8 + rand() * 6, z, 3 + rand() * 3, undefined, -0.4));
+    add('models/nature/rock_largeB.glb', shoreRocks);
+    grassAndFlowers(120);
+  }
+  await Promise.allSettled(jobs);
+}
+
+/** Quitasoles de playa (instanciados): palo blanco y techo de color. */
+function createUmbrellas(scene: THREE.Object3D, rand: () => number, x0: number, depth: number, shadows: boolean) {
+  const spots: P2[] = [];
+  for (let i = 0; i < 26; i++) spots.push([x0 + rand() * depth, -120 + rand() * 240]);
+  const poleGeo = new THREE.CylinderGeometry(0.05, 0.05, 2.6, 5);
+  poleGeo.translate(0, 1.3, 0);
+  const topGeo = new THREE.ConeGeometry(1.5, 0.6, 10, 1, true);
+  topGeo.translate(0, 2.6, 0);
+  const poles = new THREE.InstancedMesh(poleGeo, new THREE.MeshLambertMaterial({ color: '#f5f5f5' }), spots.length);
+  const tops = new THREE.InstancedMesh(topGeo, new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }), spots.length);
+  const colors = ['#e63946', '#f4a261', '#2a9d8f', '#ffd166', '#118ab2'].map((c) => new THREE.Color(c));
+  const m = new THREE.Matrix4();
+  spots.forEach(([x, z], i) => {
+    m.makeTranslation(x, groundHeight(x, z), z);
+    poles.setMatrixAt(i, m);
+    tops.setMatrixAt(i, m);
+    tops.setColorAt(i, colors[i % colors.length]);
+  });
+  poles.castShadow = tops.castShadow = shadows;
+  scene.add(poles, tops);
 }

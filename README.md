@@ -23,6 +23,7 @@ Otros comandos:
 ```bash
 npm test                  # pruebas de física, cortes, bots y progresión
 npm run typecheck
+npx tsx scripts/botsim.ts 300 4   # simula bots peleando 300 s y cuenta cruces, críticos y cortes
 npm start                 # compila el cliente y lo sirve junto a la API en :8787 (modo publicación)
 node scripts/gen-textures.mjs   # regenera texturas/diseños con OpenAI (solo los que falten)
 ```
@@ -34,6 +35,8 @@ node scripts/gen-textures.mjs   # regenera texturas/diseños con OpenAI (solo lo
 | Caminar / correr | WASD / flechas | Joystick (mitad izquierda) |
 | Tirar | Clic izquierdo / Espacio | Botón TIRAR |
 | Soltar hilo | Clic derecho / Shift | Botón SOLTAR |
+| Tirón seco (gira de golpe y recoge rápido) | F / clic del medio | Botón ⚡ TIRÓN |
+| Largada (dar cuerda rápido) | Shift o clic derecho dos veces y mantener / C | Tocar SOLTAR dos veces y mantener |
 | Dirigir (o girar la cámara a pie) | Mouse izq./der. / Q E | Arrastrar en la mitad derecha |
 | Zoom | Rueda | Pellizcar |
 | Encumbrar | R | Botón 🪁 Encumbrar |
@@ -41,6 +44,32 @@ node scripts/gen-textures.mjs   # regenera texturas/diseños con OpenAI (solo lo
 | Panel de ajustes | G (o `?debug` en la URL) | — |
 
 Recoger todo el hilo guarda el volantín: quedas libre para correr y capturar los volantines que caen.
+
+### Combate
+
+- **Golpe crítico:** un tirón o una largada justo al cruzarte con otro hilo (hasta 0,5 s después del cruce) le quita 30 de integridad de una vez.
+- **Hilos:** ataque (filo), vida (resistencia) y recuperación. Cruzarse cerca del volantín rival (la **zona débil**, el último 20 % del hilo) hace 30 % más daño.
+- **Combos:** cortes seguidos (a menos de 20 s uno del otro) dan DOBLE, TRIPLE… y monedas extra. Con el tercero entras en racha **¡Encachado!**: 25 s con más filo y recuperación.
+- **Contra la corriente:** cortar a alguien que tiene mejor hilo que tú paga el doble.
+
+### Equipo
+
+- **Volantines:** cinco tipos chilenos (cambucha, ñecla, comisión, chonchón y pavo) con velocidad, agilidad, estabilidad y tamaño propios, en cuatro rarezas. La cambucha y el chonchón llevan **cola larga**: los estabiliza, pero un tirón seco de un rival pegado a la cola se la corta y el volantín empieza a cabecear.
+- **Tirantes:** cada tirante habilita un tramo de la perilla de **amarre** (de tranquilo a cabeceador) que se ajusta en el menú de equipo.
+- **Hilos:** 14 hilos en cuatro categorías, con perfiles agresivos (más ataque), aguantadores (más vida) y regeneradores (más recuperación).
+
+### Recoger volantines
+
+- Los volantines que recoges van a la **mochila** y se cobran al dejarlos en **tu casa** (el anillo amarillo donde apareciste; una flecha te guía). Si te cortan cargado, se te cae uno y otro lo puede recoger.
+- La **mochila** decide cuántos llevas (de 2 a 10). El **colihue** alcanza más lejos y más alto, y hace que cada volantín pague más.
+- Los volantines raros pagan ×1,5, los épicos ×2 y los legendarios ×3. Todos quedan en el **álbum de trofeos** (menú → Cuenta).
+
+### Escenarios
+
+Se eligen en el menú → Jugar (algunos se desbloquean por nivel). Cada uno tiene su terreno y su viento:
+**El Cerro**, **Parque O'Higgins** (fondas y una zona de bono en el cielo: cortar ahí paga extra), **Campo al atardecer** (viento suave),
+**La Playa** (viento fuerte y parejo, también con zona de bono) y **Cerros de Valparaíso** (rachas y cables del tendido que enredan y cortan el hilo).
+En online, la partida rápida y la sala nueva usan el escenario elegido; al entrar con código se usa el de la sala. En desarrollo, `?mapa=playa` en la URL abre ese escenario.
 
 ## Estructura
 

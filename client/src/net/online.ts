@@ -1,4 +1,4 @@
-import type { ClientMsg, Gear, KiteDesign, Look, NetFallen, NetPlayerInfo, NetState, ServerMsg } from '@volantines/shared';
+import type { ClientMsg, Gear, KiteDesign, Look, MapId, NetFallen, NetPlayerInfo, NetSnapPlayer, NetState, ServerMsg } from '@volantines/shared';
 
 /** Se dibuja a los demás un poco en el pasado para poder interpolar entre dos snapshots. */
 const INTERP_DELAY = 0.12;
@@ -6,7 +6,7 @@ const BUFFER = 12;
 
 interface Snap {
   time: number;
-  players: Map<string, { s: NetState; I: number; x: string | null }>;
+  players: Map<string, NetSnapPlayer>;
 }
 
 export interface JoinProfile {
@@ -15,11 +15,16 @@ export interface JoinProfile {
   design: KiteDesign;
   gear: Gear;
   token: string | null;
+  /** Mapa que quieres (partida rápida o sala nueva). */
+  map: MapId;
 }
 
 export type NetEvent =
   | { t: 'info'; info: NetPlayerInfo[] }
-  | { t: 'cut'; victim: string; cutter: string | null }
+  | Extract<ServerMsg, { t: 'cut' }>
+  | Extract<ServerMsg, { t: 'crit' }>
+  | Extract<ServerMsg, { t: 'tail' }>
+  | Extract<ServerMsg, { t: 'delivered' }>
   | { t: 'fallen'; id: string; owner: string; ownerName: string; design: KiteDesign; kite: string; p: [number, number, number]; h: number }
   | { t: 'captured'; fallen: string; by: string }
   | { t: 'closed'; reason: string };
@@ -33,6 +38,8 @@ export class Online {
   room = '';
   isPrivate = false;
   spawn: [number, number, number] = [0, 0, 0];
+  /** Mapa de la sala (lo decide el servidor). */
+  map: MapId = 'cerro';
   info = new Map<string, NetPlayerInfo>();
   readonly events: NetEvent[] = [];
   fallen: NetFallen[] = [];
@@ -56,7 +63,7 @@ export class Online {
         ws.close();
       };
       const timer = setTimeout(() => fail('El servidor no responde.'), 8000);
-      ws.onopen = () => this.send({ t: 'join', room, name: p.name, look: p.look, design: p.design, gear: p.gear, token: p.token });
+      ws.onopen = () => this.send({ t: 'join', room, name: p.name, look: p.look, design: p.design, gear: p.gear, token: p.token, map: p.map });
       ws.onerror = () => fail('No se pudo conectar al servidor.');
       ws.onclose = () => {
         if (this.myId) this.events.push({ t: 'closed', reason: 'Se perdió la conexión con la sala.' });
@@ -71,6 +78,7 @@ export class Online {
             this.room = m.room;
             this.isPrivate = m.private;
             this.spawn = m.spawn;
+            this.map = m.map ?? 'cerro';
             this.setInfo(m.info);
             this.syncClock(m.time);
             resolve();

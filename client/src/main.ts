@@ -1,5 +1,45 @@
 import * as THREE from 'three';
-import { KITES, NET_RATE, groundHeight, resolveCrossings, windAt, type BotView, type KiteInput, type LineBody, type NetPlayerInfo } from '@volantines/shared';
+import {
+  COMBO,
+  CUT,
+  DELIVERY_RADIUS,
+  DROP_LOCK,
+  KITES,
+  REWARDS,
+  activeMap,
+  bagOf,
+  cableSegments,
+  captureValue,
+  inBonus,
+  isMapId,
+  mapById,
+  useMap,
+  walkable,
+  poleOf,
+  trophyOf,
+  NET_RATE,
+  comboName,
+  groundHeight,
+  isUpset,
+  newCombo,
+  registerCut,
+  resetCombo,
+  resolveCables,
+  resolveCrossings,
+  resolveTailCuts,
+  streakActive,
+  windAt,
+  type BotView,
+  type CarryItem,
+  type ComboState,
+  type Hook,
+  type KiteInput,
+  type LineBody,
+  type ManeuverKind,
+  type MapId,
+  type NetPlayerInfo,
+  type V3,
+} from '@volantines/shared';
 import './style.css';
 import { Input } from './input';
 import { CameraRig } from './cameraRig';
@@ -14,6 +54,8 @@ import { FallenKites } from './game/fallen';
 import { createBots, updateBot } from './game/bots';
 import { Sparks } from './game/sparks';
 import { Online } from './net/online';
+import { GameAudio } from './audio';
+import { HomeMarker } from './entities/homeMarker';
 
 const FIXED_DT = 1 / 120;
 const WALK_WITH_KITE = 3.5;
@@ -32,7 +74,21 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 3000);
-const world = createWorld(scene, { shadows: !isMobile, mobile: isMobile });
+// Escenario: el último elegido o El Cerro (en desarrollo también ?mapa=playa en la URL)
+const MAP_KEY = 'volantines.map';
+const savedMap = (() => {
+  try {
+    const fromUrl = import.meta.env.DEV ? new URLSearchParams(location.search).get('mapa') : null;
+    return fromUrl ?? localStorage.getItem(MAP_KEY);
+  } catch {
+    return null;
+  }
+})();
+useMap(isMapId(savedMap) ? savedMap : 'cerro');
+const quality = { shadows: !isMobile, mobile: isMobile };
+let world = createWorld(scene, quality, activeMap());
+/** Tramos de cable del mapa (física de los cables del tendido). */
+let cables = cableSegments(activeMap(), groundHeight);
 if (import.meta.env.DEV) Object.assign(window, { __game: { renderer, scene, camera } });
 const rig = new CameraRig(camera);
 
@@ -117,11 +173,74 @@ const remotes = new Map<string, Flyer>();
 let sendTimer = 0;
 const fallen = new FallenKites(scene);
 const sparks = new Sparks(scene);
+const audio = new GameAudio();
+hud.setSound(!audio.muted);
+hud.onSound = () => {
+  audio.setMuted(!audio.muted);
+  hud.setSound(!audio.muted);
+};
+
+/** Combos y rachas de cada uno (en modo solo; online el servidor manda y aquí solo se sigue el tuyo). */
+const combos = new Map<string, ComboState>();
+function comboOf(id: string) {
+  let c = combos.get(id);
+  if (!c) combos.set(id, (c = newCombo()));
+  return c;
+}
+/** s reales que quedan de cámara lenta (al cortar, solo en modo solo). */
+let slowmo = 0;
+/** Hasta cuándo (reloj real, s) se muestra el aviso del golpe crítico tras cruzarte. */
+let critMomentUntil = 0;
+let wasCrossing = false;
+const CRIT_TIP_KEY = 'volantines.critTip';
+
+// --- Mochila y casa (fase 3) ---
+/** Volantines capturados que llevas: se cobran al llegar a tu casa (en online el servidor lleva la cuenta y aquí se sigue). */
+const bag: CarryItem[] = [];
+const homeMarker = new HomeMarker(scene);
+homeMarker.setPosition(player.home);
+const myBag = () => bagOf(session.data.gear.bag);
+const myPole = () => poleOf(session.data.gear.pole);
+let bagFullToast = 0;
+
+/** Llegaste a tu casa con la mochila cargada: se cobran y van al álbum. */
+function deliver(items: CarryItem[]) {
+  bag.length = 0;
+  if (!items.length) return;
+  const pole = myPole();
+  let coins = 0;
+  for (const it of items) {
+    const value = captureValue(it.kite, pole);
+    coins += value;
+    session.capture(trophyOf(it));
+  }
+  session.add('captureBonus', coins - REWARDS.capture * items.length);
+  session.add('bestDelivery', items.length);
+  devLog('delivered', { n: items.length, coins });
+  hud.announce(`¡ENTREGA! +${coins} 🪙`, 'combo', `${items.length} ${items.length === 1 ? 'volantín' : 'volantines'} al álbum`);
+  audio.combo(Math.min(6, items.length + 1));
+  player.character.playOnce('emote-yes');
+  setTimeout(() => void session.flush(), 600);
+}
+
+/** Recogiste un volantín: a la mochila. */
+function pickUp(item: CarryItem, own: boolean) {
+  bag.push(item);
+  const cap = myBag().capacidad;
+  devLog('pickup', { n: bag.length, cap, own });
+  audio.capture();
+  player.character.playOnce('pick-up');
+  hud.toast(
+    `🎒 ${own ? '¡Recuperaste tu volantín!' : `¡Capturaste el volantín de ${item.ownerName}!`} (${bag.length}/${cap}) · llévalo a tu casa 🏠`,
+    4,
+    'good',
+  );
+}
 
 let time = 0;
 let stepCount = 0;
 const contactsNow = new Set<string>();
-const hooks = new Set<string>(); // pares de hilos enganchados
+const hooks = new Map<string, Hook>(); // pares de hilos enganchados
 if (import.meta.env.DEV) Object.assign((window as unknown as { __game: object }).__game, { flyers, hooks, fallen });
 let playerCrossing: string | null = null;
 let wasStowed = false;
@@ -165,6 +284,12 @@ function respawn(x: number, z: number) {
   player.pos.x = x;
   player.pos.z = z;
   player.pos.y = groundHeight(x, z);
+  // Donde apareces queda tu casa (y se vacía la mochila)
+  player.home.x = x;
+  player.home.y = player.pos.y;
+  player.home.z = z;
+  homeMarker.setPosition(player.home);
+  bag.length = 0;
   player.vel.x = player.vel.z = 0;
   player.character.update(player.pos, 0, null, 0, 0);
   launchPlayer();
@@ -195,22 +320,47 @@ function syncRemotes(info: Map<string, NetPlayerInfo>) {
     r.setLook(i.look);
   }
   flyers = [player, ...remotes.values()];
-  hud.setRoom(`Sala ${online.room}${online.isPrivate ? ' (privada)' : ''} · ${[...info.values()].filter((p) => !p.bot).length} jugadores`);
+  hud.setRoom(`${mapById(online.map).emoji} Sala ${online.room}${online.isPrivate ? ' (privada)' : ''} · ${[...info.values()].filter((p) => !p.bot).length} jugadores`);
 }
 
 /** Entra a una sala online: '' partida rápida, 'NUEVA' sala privada, o un código. */
 async function goOnline(room: string) {
   const d = session.data;
-  await online.connect(room, { name: d.name, look: d.look, design: d.design, gear: d.gear, token: session.token });
+  await online.connect(room, { name: d.name, look: d.look, design: d.design, gear: d.gear, token: session.token, map: chosenMap });
   mode = 'online';
+  // La sala manda el escenario (al entrar con código puede ser otro)
+  switchMap(online.map);
   for (const b of bots) b.dispose();
   bots = [];
   fallen.clear();
   hooks.clear();
+  combos.clear();
   syncRemotes(online.info);
   time = online.serverNow();
   respawn(online.spawn[0], online.spawn[2]);
 }
+
+/** Cambia de escenario: arma el mundo nuevo y (en modo solo) vuelve a empezar en el cerro del mapa. */
+function switchMap(id: MapId) {
+  if (id === activeMap().id) return;
+  world.dispose();
+  useMap(id);
+  world = createWorld(scene, quality, activeMap());
+  if (lowQuality) world.sun.castShadow = false;
+  cables = cableSegments(activeMap(), groundHeight);
+  fallen.clear();
+  hooks.clear();
+  combos.clear();
+  hud.toast(`${activeMap().emoji} ${activeMap().nombre}: viento de ${Math.round(activeMap().wind.base * 3.6)} km/h`, 4);
+  if (mode === 'solo') {
+    for (const b of bots) b.dispose();
+    bots = createBots(scene, botCount, !isMobile, ropePoints, rand);
+    flyers = [player, ...bots];
+    respawn(0, 0);
+  }
+}
+/** Mapa elegido en el menú (para modo solo y para la próxima sala online). */
+let chosenMap: MapId = activeMap().id;
 
 /** Vuelve al modo solo con bots locales. */
 function goSolo() {
@@ -220,6 +370,13 @@ function goSolo() {
   remotes.clear();
   fallen.clear();
   hooks.clear();
+  combos.clear();
+  if (chosenMap !== activeMap().id) {
+    mode = 'solo';
+    switchMap(chosenMap);
+    hud.setRoom(null);
+    return;
+  }
   bots = createBots(scene, botCount, !isMobile, ropePoints, rand);
   flyers = [player, ...bots];
   hud.setRoom(null);
@@ -240,6 +397,16 @@ const menu = new Menu(
         : 'Clic derecho (Shift) suelta hilo. Clic izquierdo (Espacio) tira: hazlo cuando la punta apunte hacia arriba.',
       6,
     );
+    setTimeout(
+      () =>
+        hud.toast(
+          input.isTouch
+            ? '⚡ Justo al cruzarte con otro hilo pega un TIRÓN (o toca SOLTAR dos veces): ¡golpe crítico!'
+            : '⚡ Justo al cruzarte con otro hilo pega un tirón (F) o una largada (Shift dos veces): ¡golpe crítico!',
+          7,
+        ),
+      6500,
+    );
   },
   {
     play: async (room) => {
@@ -250,6 +417,17 @@ const menu = new Menu(
       mode === 'online'
         ? { room: online.room, isPrivate: online.isPrivate, players: [...online.info.values()].map((p) => (p.bot ? `${p.name} (bot)` : p.name)) }
         : null,
+    map: () => chosenMap,
+    selectMap: (id) => {
+      chosenMap = id;
+      try {
+        localStorage.setItem(MAP_KEY, id);
+      } catch {
+        // sin almacenamiento solo no se recuerda
+      }
+      if (mode === 'solo') switchMap(id);
+      else hud.toast(`${mapById(id).nombre}: se usará en tu próxima sala.`, 4);
+    },
   },
 );
 function openMenu() {
@@ -281,6 +459,119 @@ if (new URLSearchParams(location.search).has('debug')) void toggleDebug();
 const windFor = (alt: number) => windAt(time, alt);
 const NO_KITE: KiteInput = { tirar: false, soltar: false, dirX: 0 };
 
+/** En desarrollo deja registro de cortes y críticos en window.__game.log (para pruebas en el navegador). */
+const gameLog: { t: string; at: number; [k: string]: unknown }[] = [];
+function devLog(t: string, data: object) {
+  if (import.meta.env.DEV) gameLog.push({ t, at: Math.round(time * 10) / 10, ...data });
+}
+if (import.meta.env.DEV) {
+  const g = (window as unknown as { __game: object }).__game;
+  Object.assign(g, { log: gameLog, player, hud, input, online, session, fallen });
+  Object.defineProperty(g, 'mode', { get: () => mode });
+  void import('@volantines/shared').then((m) => Object.assign(g, { shared: m, loadoutFrom }));
+}
+
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const who = (name: string, me: boolean) => (me ? '<span class="me">Tú</span>' : escapeHtml(name));
+const maneuverName = (k: ManeuverKind) => (k === 2 ? 'LARGADA' : 'TIRÓN');
+
+interface CutInfo {
+  combo: number;
+  upset: boolean;
+  streak: boolean;
+  /** Cortó con su volantín dentro de la zona de bono. */
+  bonus: boolean;
+  /** Se cortó enredado en los cables. */
+  cable: boolean;
+}
+let playerOnCable = false;
+
+/** Un corte (en solo o informado por el servidor): anuncios, sonido, lista de cortes y progreso. */
+function onCut(victimName: string, victimMe: boolean, cutterName: string | null, cutterMe: boolean, info: CutInfo) {
+  devLog('cut', { victimName, victimMe, cutterName, cutterMe, ...info });
+  const tags = `${info.combo > 1 ? `<span class="tag">${comboName(info.combo)}</span>` : ''}${info.upset ? '<span class="tag">CONTRA LA CORRIENTE</span>' : ''}${info.bonus ? '<span class="tag">✨ ZONA BONUS</span>' : ''}`;
+  hud.feed(
+    cutterName
+      ? `${who(cutterName, cutterMe)} ✂️ ${who(victimName, victimMe)}${tags}`
+      : `${who(victimName, victimMe)} ${info.cable ? 'se enredó en los cables ⚡' : 'se cortó solo'}`,
+  );
+  if (victimMe) {
+    if (info.cable) {
+      hud.announce('¡SE ENREDÓ EN LOS CABLES!', 'bad', 'El tendido eléctrico corta cualquier hilo');
+    } else if (cutterName) {
+      session.add('cutBy');
+      hud.announce('¡TE CORTARON!', 'bad', cutterName);
+      hud.toast('Corre a buscar volantines caídos o encumbra otro.', 4, 'bad');
+    } else {
+      hud.toast('Se cortó tu hilo de tanto tirarlo. ¡Anda a buscarlo!', 5, 'bad');
+    }
+    resetCombo(comboOf(player.id));
+    audio.cutBy();
+    // Con la mochila cargada se te cae un volantín (online lo deja caer el servidor)
+    const lost = bag.pop();
+    if (lost) {
+      hud.toast(`🎒 Se te cayó el volantín de ${lost.ownerName} de la mochila`, 4, 'bad');
+      if (mode === 'solo') {
+        const def = KITES.find((k) => k.id === lost.kite) ?? KITES[1];
+        fallen.addDropped(lost, def, { ...player.loadout, kite: def }, player.pos, player.id, time + DROP_LOCK);
+      }
+    }
+    setTimeout(() => void session.flush(), 1000);
+  } else if (cutterMe) {
+    session.add('cuts');
+    if (info.combo > 1) session.add('comboCuts');
+    session.add('bestCombo', info.combo);
+    if (info.upset) session.add('upsets');
+    if (info.bonus) session.add('bonusCuts');
+    const sub = `a ${victimName}${info.upset ? ' · ¡contra la corriente!' : ''}${info.bonus ? ' · ✨ zona bonus' : ''}`;
+    hud.announce(info.combo > 1 ? `¡${comboName(info.combo)}!` : '¡CORTASTE!', info.combo > 1 ? 'combo' : 'cut', sub);
+    if (info.streak)
+      setTimeout(() => {
+        hud.announce('¡ENCACHADO!', 'streak', `Más filo y recuperación por ${COMBO.streakTime} s`);
+        audio.streak();
+      }, 800);
+    audio.cut();
+    if (info.combo > 1) audio.combo(info.combo);
+    rig.shake(0.35);
+    if (mode === 'solo') slowmo = 0.5;
+    player.character.playOnce('emote-yes');
+    setTimeout(() => void session.flush(), 1000);
+  } else {
+    audio.cutFar();
+  }
+}
+
+/** Le cortaron la cola a alguien: sin cola el volantín cabecea. */
+function onTailCut(byMe: boolean, victimMe: boolean, byName: string, victimName: string, p: V3) {
+  devLog('tail', { byMe, victimMe, byName, victimName });
+  sparks.burst(p, byMe || victimMe ? 16 : 8);
+  hud.feed(`${who(byName, byMe)} ✂️ cola de ${who(victimName, victimMe)}`);
+  if (byMe) {
+    session.add('tailCuts');
+    hud.announce('¡COLA CORTADA!', 'crit', `a ${victimName}: ahora va a cabecear`);
+    audio.tail();
+    rig.shake(0.1);
+  } else if (victimMe) {
+    hud.announce('¡TE CORTARON LA COLA!', 'bad', `${byName} · ahora tu volantín cabecea`);
+    audio.tail();
+  }
+}
+
+/** Golpe crítico: chispas grandes y, si te toca, anuncio y sonido. */
+function onCrit(byMe: boolean, victimMe: boolean, byName: string, kind: ManeuverKind, p: V3) {
+  devLog('crit', { byMe, victimMe, byName, kind });
+  sparks.burst(p, byMe || victimMe ? 26 : 12);
+  if (byMe) {
+    session.add('crits');
+    hud.announce('¡CRÍTICO!', 'crit', maneuverName(kind));
+    audio.crit();
+    rig.shake(0.15);
+  } else if (victimMe) {
+    hud.announce('¡CRÍTICO EN CONTRA!', 'bad', `${maneuverName(kind).toLowerCase()} de ${byName}`);
+    audio.crit();
+  }
+}
+
 // --- Simulación a paso fijo ---
 function fixedStep(dt: number) {
   time += dt;
@@ -291,16 +582,24 @@ function fixedStep(dt: number) {
   const speed = player.flying ? WALK_WITH_KITE : RUN_FREE;
   const mlen = Math.hypot(inp.moveX, inp.moveY);
   const k = mlen > 1 ? 1 / mlen : 1;
-  const vx = (rig.forward.x * inp.moveY + rig.right.x * inp.moveX) * k * speed;
-  const vz = (rig.forward.z * inp.moveY + rig.right.z * inp.moveX) * k * speed;
+  let vx = (rig.forward.x * inp.moveY + rig.right.x * inp.moveX) * k * speed;
+  let vz = (rig.forward.z * inp.moveY + rig.right.z * inp.moveX) * k * speed;
+  // No se camina dentro del mar ni de la laguna
+  if (!walkable(player.pos.x + vx * dt * 8, player.pos.z + vz * dt * 8)) vx = vz = 0;
   player.step(dt, player.flying ? inp : NO_KITE, vx, vz, windFor(player.altitude));
+  if (inp.tiron) input.consumeTiron();
+  const pk = player.kite;
+  if (pk && player.flying && pk.maneuverAge === 0) {
+    if (pk.maneuver === 1) audio.tiron();
+    else audio.largada();
+  }
 
   if (mode === 'online') {
     // Online: cruces, cortes y capturas los decide el servidor. Aquí solo el corte por desgaste.
     if (player.kite?.broken) {
       online.send({ t: 'broken' });
       player.detachKite()?.view.dispose();
-      hud.toast('Se cortó tu hilo de tanto tirarlo. ¡Anda a buscarlo!', 5, 'bad');
+      onCut(player.name, true, null, false, { combo: 0, upset: false, streak: false, bonus: false, cable: false });
     }
     fallen.step(dt, windFor);
     playerStats(dt);
@@ -324,7 +623,16 @@ function fixedStep(dt: number) {
 
   // Cruces de hilos (a 60 Hz alcanza)
   if (stepCount % 2 === 0) {
+    for (const f of flyers) f.boosted = streakActive(comboOf(f.id), time);
     const lines = flyers.map((f) => f.lineBody()).filter((l): l is LineBody => !!l);
+    // Cables del tendido: gastan el hilo que los toca
+    playerOnCable = false;
+    for (const hit of resolveCables(lines, cables, dt * 2)) {
+      const f = flyers.find((x) => x.id === hit.id)!;
+      f.lastDamager = 'cable';
+      if (f === player) playerOnCable = true;
+      if (stepCount % 8 === 0) sparks.burst(hit.point, 2);
+    }
     const contacts = resolveCrossings(lines, dt * 2, hooks);
     contactsNow.clear();
     playerCrossing = null;
@@ -337,6 +645,15 @@ function fixedStep(dt: number) {
       if (a === player) playerCrossing = b.name;
       if (b === player) playerCrossing = a.name;
       if (stepCount % 6 === 0) sparks.burst(c.point, 3);
+      for (const cr of c.crits) {
+        const by = cr.by === a.id ? a : b;
+        onCrit(by === player, cr.victim === player.id, by.name, cr.kind, c.point);
+      }
+    }
+    for (const tc of resolveTailCuts(lines)) {
+      const by = flyers.find((f) => f.id === tc.by)!;
+      const victim = flyers.find((f) => f.id === tc.victim)!;
+      onTailCut(by === player, victim === player, by.name, victim.name, tc.point);
     }
   }
 
@@ -345,39 +662,42 @@ function fixedStep(dt: number) {
     if (!f.kite?.broken) continue;
     const byCross = f.kite.integrity <= 0;
     const cutter = byCross ? flyers.find((o) => o.id === f.lastDamager) ?? null : null;
-    if (f === player) {
-      if (cutter) {
-        session.add('cutBy');
-        hud.toast(`✂️ Te cortó ${cutter.name}. ¡Corre a buscar volantines caídos!`, 5, 'bad');
-      } else {
-        hud.toast('Se cortó tu hilo de tanto tirarlo. ¡Anda a buscarlo!', 5, 'bad');
-      }
-      setTimeout(() => void session.flush(), 1000);
-    } else if (cutter === player) {
-      session.add('cuts');
-      hud.toast(`✂️ ¡Cortaste a ${f.name}!`, 4, 'good');
-      player.character.playOnce('emote-yes');
-      setTimeout(() => void session.flush(), 1000);
-    } else if (cutter) {
-      hud.toast(`${cutter.name} cortó a ${f.name}`, 3);
+    resetCombo(comboOf(f.id));
+    const info: CutInfo = { combo: 0, upset: false, streak: false, bonus: false, cable: byCross && f.lastDamager === 'cable' };
+    if (cutter) {
+      const r = registerCut(comboOf(cutter.id), time);
+      info.combo = r.combo;
+      info.streak = r.streakStarted;
+      info.upset = isUpset(cutter.loadout.line, f.loadout.line);
+      info.bonus = !!cutter.kite && inBonus(activeMap(), cutter.kite.pos);
     }
+    onCut(f.name, f === player, cutter?.name ?? null, cutter === player, info);
     const detached = f.detachKite();
     if (detached) fallen.add(f, detached);
   }
 
   fallen.step(dt, windFor);
-  for (const { fallen: fk, by } of fallen.captures(flyers)) {
+  const full = bag.length >= myBag().capacidad;
+  if (full && performance.now() > bagFullToast) {
+    const near = fallen.nearest(player.pos);
+    if (near && near.dist < myPole().alcance + 1) {
+      bagFullToast = performance.now() + 6000;
+      hud.toast(`🎒 Mochila llena (${bag.length}/${myBag().capacidad}): ve a dejar los volantines a tu casa 🏠`, 4, 'bad');
+    }
+  }
+  const botPole = poleOf('mano');
+  for (const { fallen: fk, by } of fallen.captures(flyers, (f) => (f === player ? (full ? null : myPole()) : botPole), time)) {
     if (by === player) {
-      session.capture(fk.design);
-      hud.toast(fk.owner === player.id ? '🪁 ¡Recuperaste tu volantín!' : `🪁 ¡Capturaste el volantín de ${fk.ownerName}!`, 4, 'good');
-      player.character.playOnce('pick-up');
-      setTimeout(() => void session.flush(), 1000);
+      pickUp({ design: fk.design, kite: fk.lo.kite.id, owner: fk.owner, ownerName: fk.ownerName }, fk.owner === player.id);
     } else {
       const whose = fk.owner === by.id ? 'recuperó su volantín' : `capturó el volantín de ${fk.owner === player.id ? 'ti' : fk.ownerName}`;
       hud.toast(`${by.name} ${whose}`, 3, fk.owner === player.id ? 'bad' : 'info');
       by.botState = 'volver';
     }
   }
+
+  // Entrega: con volantines en la mochila y parado en tu casa
+  if (bag.length && Math.hypot(player.pos.x - player.home.x, player.pos.z - player.home.z) <= DELIVERY_RADIUS) deliver(bag.slice());
 
   playerStats(dt);
 }
@@ -411,21 +731,31 @@ function handleNetEvents() {
   for (const e of online.events.splice(0)) {
     if (e.t === 'info') syncRemotes(online.info);
     else if (e.t === 'cut') {
-      if (e.victim === online.myId) {
-        player.detachKite()?.view.dispose();
-        if (e.cutter) {
-          session.add('cutBy');
-          hud.toast(`✂️ Te cortó ${nameOf(e.cutter)}. ¡Corre a buscar volantines caídos!`, 5, 'bad');
-        }
-        setTimeout(() => void session.flush(), 1000);
-      } else if (e.cutter === online.myId) {
-        session.add('cuts');
-        hud.toast(`✂️ ¡Cortaste a ${nameOf(e.victim)}!`, 4, 'good');
-        player.character.playOnce('emote-yes');
-        setTimeout(() => void session.flush(), 1000);
-      } else if (e.cutter) {
-        hud.toast(`${nameOf(e.cutter)} cortó a ${nameOf(e.victim)}`, 3);
+      const victimMe = e.victim === online.myId;
+      const cutterMe = !!e.cutter && e.cutter === online.myId;
+      if (victimMe) player.detachKite()?.view.dispose();
+      if (cutterMe) {
+        // Sigue tu racha localmente para mostrar cuánto le queda (el servidor es el que la aplica)
+        const c = comboOf(player.id);
+        const active = streakActive(c, time);
+        c.count = e.combo ?? 1;
+        c.last = time;
+        if (e.streak || active) c.streakUntil = time + COMBO.streakTime;
       }
+      // Tu propio corte por desgaste ya se anunció al avisarle al servidor
+      if (victimMe && !e.cutter) continue;
+      onCut(nameOf(e.victim), victimMe, e.cutter ? nameOf(e.cutter) : null, cutterMe, {
+        combo: e.combo ?? 1,
+        upset: !!e.upset,
+        streak: !!e.streak,
+        bonus: !!e.bonus,
+        cable: !!e.cable,
+      });
+    } else if (e.t === 'tail') {
+      if (e.victim === online.myId && player.kite) player.kite.tailCut = true;
+      onTailCut(e.by === online.myId, e.victim === online.myId, nameOf(e.by), nameOf(e.victim), { x: e.p[0], y: e.p[1], z: e.p[2] });
+    } else if (e.t === 'crit') {
+      onCrit(e.by === online.myId, e.victim === online.myId, nameOf(e.by), e.kind, { x: e.p[0], y: e.p[1], z: e.p[2] });
     } else if (e.t === 'fallen') {
       const def = KITES.find((k) => k.id === e.kite) ?? KITES[1];
       fallen.addNet(e, def, { ...player.loadout, kite: def });
@@ -433,14 +763,14 @@ function handleNetEvents() {
       const fk = fallen.removeById(e.fallen);
       if (!fk || !e.by) continue;
       if (e.by === online.myId) {
-        session.capture(fk.design);
-        hud.toast(fk.owner === online.myId ? '🪁 ¡Recuperaste tu volantín!' : `🪁 ¡Capturaste el volantín de ${fk.ownerName}!`, 4, 'good');
-        player.character.playOnce('pick-up');
-        setTimeout(() => void session.flush(), 1000);
+        pickUp({ design: fk.design, kite: fk.lo.kite.id, owner: fk.owner, ownerName: fk.ownerName }, fk.owner === online.myId);
       } else {
         const whose = fk.owner === e.by ? 'recuperó su volantín' : `capturó el volantín de ${fk.owner === online.myId ? 'ti' : fk.ownerName}`;
         hud.toast(`${nameOf(e.by)} ${whose}`, 3, fk.owner === online.myId ? 'bad' : 'info');
       }
+    } else if (e.t === 'delivered') {
+      if (e.by === online.myId) deliver(e.items);
+      else hud.feed(`${escapeHtml(nameOf(e.by))} 🏠 entregó ${e.items.length} ${e.items.length === 1 ? 'volantín' : 'volantines'}`);
     } else if (e.t === 'closed') {
       hud.toast(`${e.reason} Sigues jugando solo.`, 5, 'bad');
       goSolo();
@@ -479,7 +809,9 @@ function frame(now: number) {
     handleNetEvents();
   }
 
-  acc += dt;
+  // Cámara lenta al cortar (solo en modo solo: online el tiempo lo manda la sala)
+  acc += mode === 'solo' && slowmo > 0 ? dt * 0.3 : dt;
+  slowmo = Math.max(0, slowmo - dt);
   let steps = 0;
   while (acc >= FIXED_DT && steps < 12) {
     fixedStep(FIXED_DT);
@@ -492,9 +824,11 @@ function frame(now: number) {
     for (const [id, r] of remotes) {
       const st = online.sample(id);
       if (st) r.applyNet(st);
+      r.boosted = !!online.latest(id)?.b;
     }
     fallen.syncNet(online.fallen);
     const mine = online.latest(online.myId);
+    player.boosted = !!mine?.b;
     if (player.kite && mine && mine.s.fid === player.fid) player.kite.integrity = mine.I;
     playerCrossing = mine?.x ? (online.info.get(mine.x)?.name ?? null) : null;
     sendTimer -= dt;
@@ -505,7 +839,37 @@ function frame(now: number) {
   }
 
   const wind = windFor(player.altitude);
-  for (const f of flyers) f.render(dt, time, windFor(f.altitude));
+  for (const f of flyers) {
+    f.render(dt, time, windFor(f.altitude));
+    // En racha el volantín va soltando chispas
+    if (f.boosted && f.flying && Math.random() < dt * 10) sparks.burst(f.kite!.pos, 2);
+  }
+
+  // Recién cruzado: el momento del golpe crítico
+  const nowS = now / 1000;
+  const crossing = player.flying && !!playerCrossing;
+  if (crossing && !wasCrossing) {
+    critMomentUntil = nowS + CUT.critWindow;
+    try {
+      if (!localStorage.getItem(CRIT_TIP_KEY)) {
+        localStorage.setItem(CRIT_TIP_KEY, '1');
+        hud.toast(input.isTouch ? '¡Cruzado! Toca ⚡ TIRÓN justo ahora para un golpe crítico.' : '¡Cruzado! Aprieta F justo ahora para un golpe crítico.', 5, 'gold');
+      }
+    } catch {
+      // sin almacenamiento el consejo simplemente no se recuerda
+    }
+  }
+  wasCrossing = crossing;
+  const critMoment = crossing && nowS < critMomentUntil;
+  input.setTironState(player.flying, (player.kite?.tironCooldown ?? 1) <= 0, critMoment);
+  const myCombo = comboOf(player.id);
+  audio.update({
+    windSpeed: Math.hypot(wind.x, wind.z),
+    altitude: player.altitude,
+    flying: player.flying,
+    tension: player.kite?.tension ?? 0,
+    crossing,
+  });
   fallen.render(dt, time, windFor);
   sparks.update(dt);
   const turn = input.consumeTurn(dt);
@@ -530,6 +894,15 @@ function frame(now: number) {
     };
   }
 
+  // Flecha a tu casa cuando llevas volantines
+  let homeHud: { dist: number; angle: number } | null = null;
+  const homeDist = Math.hypot(player.home.x - player.pos.x, player.home.z - player.pos.z);
+  if (bag.length && homeDist > DELIVERY_RADIUS) {
+    tmpV.set(player.home.x - player.pos.x, 0, player.home.z - player.pos.z);
+    homeHud = { dist: homeDist, angle: Math.atan2(tmpV.x * rig.right.x + tmpV.z * rig.right.z, tmpV.x * rig.forward.x + tmpV.z * rig.forward.z) };
+  }
+  homeMarker.update(time, bag.length > 0);
+
   const k = player.kite;
   hud.update(
     {
@@ -544,6 +917,12 @@ function frame(now: number) {
       windSpeed: Math.hypot(wind.x, wind.z),
       windScreenAngle: Math.atan2(wind.x * rig.right.x + wind.z * rig.right.z, wind.x * rig.forward.x + wind.z * rig.forward.z),
       fallen: fallenHud,
+      streak: streakActive(myCombo, time) ? myCombo.streakUntil - time : null,
+      bag: { n: bag.length, cap: myBag().capacidad },
+      home: homeHud,
+      inBonus: player.flying && inBonus(activeMap(), player.kite!.pos),
+      onCable: player.flying && playerOnCable,
+      critMoment,
     },
     dt,
   );

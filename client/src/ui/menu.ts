@@ -1,7 +1,28 @@
 import * as THREE from 'three';
-import { ACHIEVEMENTS, BRIDLES, KITES, LINES, REELS, breakThreshold, catalogItem } from '@volantines/shared';
+import {
+  ACHIEVEMENTS,
+  BAGS,
+  MAPS,
+  BRIDLES,
+  POLES,
+  bagOf,
+  poleOf,
+  KITES,
+  KITE_TYPES,
+  LINES,
+  RARITY_NAMES,
+  REELS,
+  breakThreshold,
+  catalogItem,
+  defaultAmarre,
+  tuneBridle,
+  type KiteType,
+  type MapId,
+  type Rarity,
+} from '@volantines/shared';
 import { Character } from '../entities/character';
 import { COLOR_SWATCHES, PATTERNS, SPECIALS, drawDesign, isSpecial, type KiteDesign } from '../kiteDesigns';
+import { KITE_SHAPES } from '../kiteShapes';
 import { CHARACTERS, GLASSES, HATS, type Look } from '../profile';
 import type { Session } from '../session';
 
@@ -11,10 +32,18 @@ export interface NetControls {
   /** null = modo solo; '' = partida rápida; 'NUEVA' = sala privada; otro = código de sala. */
   play: (room: string | null) => Promise<void>;
   status: () => { room: string; isPrivate: boolean; players: string[] } | null;
+  /** Mapa elegido y cómo cambiarlo (en modo solo cambia al tiro; online vale para la próxima sala). */
+  map: () => MapId;
+  selectMap: (id: MapId) => void;
 }
 export type MenuChange = 'look' | 'design' | 'gear' | 'name' | 'account';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** Barra de un atributo en la tienda (relativa al mejor valor de la lista). */
+const statBar = (label: string, v: number, max: number) =>
+  `<span class="stat-bar"><i>${label}</i><span><span style="width:${Math.min(100, (v / max) * 100).toFixed(0)}%"></span></span></span>`;
+const rarityTag = (r: Rarity, extra = '') => `<span class="rarity r-${r}">${RARITY_NAMES[r]}${extra}</span>`;
 
 /** Menú: cuenta y progreso, personaje, diseño del volantín y equipo (con candados y tienda). */
 export class Menu {
@@ -198,8 +227,11 @@ export class Menu {
     this.render();
   }
 
-  private setGear(kind: 'kite' | 'line' | 'reel' | 'bridle', id: string) {
-    void this.session.saveCustomization({ gear: { ...this.session.data.gear, [kind]: id } });
+  private setGear(kind: 'kite' | 'line' | 'reel' | 'bridle' | 'bag' | 'pole', id: string) {
+    const gear = { ...this.session.data.gear, [kind]: id };
+    // Tirantes nuevos: la perilla vuelve a como vienen
+    if (kind === 'bridle') delete gear.amarre;
+    void this.session.saveCustomization({ gear });
     this.onChange('gear');
     this.render();
   }
@@ -249,6 +281,22 @@ export class Menu {
       row.append(copy, leave);
       this.body.appendChild(row);
       return;
+    }
+
+    const maps = this.section('Escenario', 'Cada uno tiene su viento. En online, la partida rápida y la sala nueva usan el escenario que elijas.');
+    maps.classList.add('play-modes');
+    const lvlNow = this.session.level.level;
+    for (const m of MAPS) {
+      const locked = lvlNow < m.nivel;
+      const b = document.createElement('button');
+      b.className = `opt play-card map-card${this.net.map() === m.id ? ' on' : ''}${locked ? ' locked' : ''}`;
+      b.innerHTML = `<b>${m.emoji} ${esc(m.nombre)}</b><small>${esc(m.descripcion)}</small><small class="map-wind">💨 viento ${Math.round(m.wind.base * 3.6)} km/h${m.wind.gust > 3 ? ' con rachas' : ''}</small>${locked ? `<em class="lock">🔒 Nivel ${m.nivel}</em>` : ''}`;
+      b.addEventListener('click', () => {
+        if (locked) return this.setStatus(`Necesitas nivel ${m.nivel} para ${m.nombre}.`);
+        this.net.selectMap(m.id);
+        this.render();
+      });
+      maps.appendChild(b);
     }
 
     const modes = this.section('¿Cómo quieres jugar?');
@@ -341,19 +389,29 @@ export class Menu {
     }
 
     if (s.data.captured.length) {
-      const gal = this.section('Volantines capturados', 'Puedes volar cualquiera de estos diseños.');
+      const distinct = new Set(s.data.captured.map((t) => JSON.stringify(t.design))).size;
+      const gal = this.section(
+        `Álbum de trofeos (${s.data.captured.length})`,
+        `${distinct} diseños distintos. Toca uno para volarlo con ese diseño. Los volantines raros pagan más al entregarlos en tu casa.`,
+      );
       gal.classList.add('grid');
-      s.data.captured.forEach((d, i) => {
+      for (const t of s.data.captured) {
+        const def = KITES.find((k) => k.id === t.kite) ?? KITES[1];
         const thumb = document.createElement('canvas');
         thumb.width = thumb.height = 64;
-        void drawKitePreview(thumb, d);
-        const b = this.option(gal, `#${i + 1}`, false, () => {
+        void drawKitePreview(thumb, t.design, def.tipo);
+        const when = t.at ? new Date(t.at).toLocaleDateString('es-CL', { day: 'numeric', month: 'short' }) : '';
+        const caption = `${rarityTag(def.rareza)}<small>${esc(def.nombre)}${t.from ? `<br />de ${esc(t.from)}` : ''}${when ? ` · ${when}` : ''}</small>`;
+        const b = this.option(gal, '', false, () => {
+          const d = t.design;
           this.setDesign({ ...d, pattern: isSpecial(d.pattern) && !s.owns(`design:${d.pattern}`) ? 'cuartos' : d.pattern });
           this.status = 'Diseño aplicado a tu volantín.';
           this.render();
         });
+        b.classList.add('trophy-card');
+        b.innerHTML = caption;
         b.prepend(thumb);
-      });
+      }
     }
 
     if (!s.isGuest) {
@@ -407,14 +465,15 @@ export class Menu {
 
   private renderKite() {
     const d = this.session.data.design;
-    void drawKitePreview(this.kiteCanvas, d);
+    const tipo = this.kiteType();
+    void drawKitePreview(this.kiteCanvas, d, tipo);
 
     const patterns = this.section('Diseño', 'Elige un patrón y píntalo con tus colores.');
     patterns.classList.add('grid');
     for (const p of PATTERNS) {
       const thumb = document.createElement('canvas');
       thumb.width = thumb.height = 64;
-      void drawKitePreview(thumb, { ...d, pattern: p.id });
+      void drawKitePreview(thumb, { ...d, pattern: p.id }, tipo);
       this.option(patterns, p.nombre, d.pattern === p.id, () => this.setDesign({ pattern: p.id })).prepend(thumb);
     }
     const specials = this.section('Diseños especiales', 'Ilustrados. Se compran con monedas.');
@@ -422,7 +481,7 @@ export class Menu {
     for (const p of SPECIALS) {
       const thumb = document.createElement('canvas');
       thumb.width = thumb.height = 64;
-      void drawKitePreview(thumb, { ...d, pattern: p.id });
+      void drawKitePreview(thumb, { ...d, pattern: p.id }, tipo);
       this.shopOption(specials, `design:${p.id}`, p.nombre, d.pattern === p.id, () => this.setDesign({ pattern: p.id })).prepend(thumb);
     }
 
@@ -447,23 +506,101 @@ export class Menu {
     this.swatches(tail, d.tail, (c) => this.setDesign({ tail: c }));
   }
 
+  private kiteType(): KiteType {
+    return (KITES.find((k) => k.id === this.session.data.gear.kite) ?? KITES[1]).tipo;
+  }
+
   private renderGear() {
     const g = this.session.data.gear;
-    const size = this.section('Tamaño del volantín', 'Más grande tensa más el hilo (corta mejor) pero sube más lento.');
-    for (const k of KITES) this.shopOption(size, `kite:${k.id}`, k.nombre, g.kite === k.id, () => this.setGear('kite', k.id), `<small>${k.area} m²</small>`);
+    const d = this.session.data.design;
+    const kites = this.section('Volantín', 'Cada tipo vuela distinto. Los de cola larga son más estables… mientras no se la corten.');
+    kites.classList.add('shop-list');
+    const maxOf = (f: (k: (typeof KITES)[number]) => number) => Math.max(...KITES.map(f));
+    const topK = { vel: maxOf((k) => k.velocidad), agi: maxOf((k) => k.agilidad), est: maxOf((k) => k.estabilidad), area: maxOf((k) => k.area) };
+    for (const k of KITES) {
+      const thumb = document.createElement('canvas');
+      thumb.width = thumb.height = 56;
+      thumb.className = 'shop-thumb';
+      void drawKitePreview(thumb, d, k.tipo);
+      const stats =
+        `<small class="stat-bars">${rarityTag(k.rareza, ` · ${KITE_TYPES[k.tipo].nombre}${k.cola ? ' · con cola' : ''}`)}` +
+        `${statBar('Velocidad', k.velocidad, topK.vel)}${statBar('Agilidad', k.agilidad, topK.agi)}${statBar('Estabilidad', k.estabilidad, topK.est)}${statBar('Tamaño', k.area, topK.area)}` +
+        `<span class="stat-note">${KITE_TYPES[k.tipo].descripcion}</span></small>`;
+      this.shopOption(kites, `kite:${k.id}`, k.nombre, g.kite === k.id, () => this.setGear('kite', k.id), stats).prepend(thumb);
+    }
+
     const bridle = this.section('Tirantes', 'Cómo va amarrado el hilo: cambia el carácter del volantín en el aire.');
     for (const b of BRIDLES) this.shopOption(bridle, `bridle:${b.id}`, b.nombre, g.bridle === b.id, () => this.setGear('bridle', b.id), `<small>${b.descripcion}</small>`);
-    const line = this.section('Hilo', 'Mientras más curado, más corta y más aguanta.');
+    this.renderAmarre(bridle.parentElement!);
+
+    const line = this.section('Hilo', 'Ataque: cuánto gasta al rival. Vida: cuánto aguanta cruzado. Recuperación: cuánto se repara suelto.');
+    line.classList.add('shop-list');
+    const top = { filo: Math.max(...LINES.map((l) => l.filo)), resistencia: Math.max(...LINES.map((l) => l.resistencia)), recuperacion: Math.max(...LINES.map((l) => l.recuperacion)) };
     for (const l of LINES) {
-      this.shopOption(line, `line:${l.id}`, l.nombre, g.line === l.id, () => this.setGear('line', l.id), `<small>filo ${l.filo} · aguanta ${breakThreshold(l).toFixed(0)} N</small>`);
+      const swatch = `<i class="line-swatch" style="background:${l.color}"></i>`;
+      const stats = `<small class="stat-bars">${rarityTag(l.rareza)}${statBar('Ataque', l.filo, top.filo)}${statBar('Vida', l.resistencia, top.resistencia)}${statBar('Recup.', l.recuperacion, top.recuperacion)}<span class="stat-note">aguanta ${breakThreshold(l).toFixed(0)} N de tensión</span></small>`;
+      this.shopOption(line, `line:${l.id}`, l.nombre, g.line === l.id, () => this.setGear('line', l.id), swatch + stats);
     }
     const reel = this.section('Carrete');
     for (const r of REELS) this.shopOption(reel, `reel:${r.id}`, r.nombre, g.reel === r.id, () => this.setGear('reel', r.id), `<small>${r.maxLine} m de hilo</small>`);
+
+    const bag = this.section('Mochila', 'Los volantines que recoges se cobran al dejarlos en tu casa 🏠. Una mochila más grande te deja traer más de una vuelta.');
+    const bagId = bagOf(g.bag).id;
+    for (const b of BAGS) this.shopOption(bag, `bag:${b.id}`, `🎒 ${b.nombre}`, bagId === b.id, () => this.setGear('bag', b.id), `<small>caben ${b.capacidad} volantines</small>`);
+    const pole = this.section('Colihue', 'Alcanza volantines más lejos (y los que todavía van bajando) y hace que paguen más al entregarlos.');
+    const poleId = poleOf(g.pole).id;
+    for (const p of POLES) {
+      const extra = `<small>alcance ${p.alcance} m · hasta ${p.altura} m de alto${p.bono ? ` · +${Math.round(p.bono * 100)}% 🪙` : ''}</small>`;
+      this.shopOption(pole, `pole:${p.id}`, p.nombre, poleId === p.id, () => this.setGear('pole', p.id), extra);
+    }
+  }
+
+  /** Perilla de amarre: ajusta los tirantes dentro del rango que permiten. */
+  private renderAmarre(section: HTMLElement) {
+    const g = this.session.data.gear;
+    const b = BRIDLES.find((x) => x.id === g.bridle) ?? BRIDLES[1];
+    const value = g.amarre ?? defaultAmarre(b);
+    const box = document.createElement('div');
+    box.className = 'amarre';
+    box.innerHTML = `
+      <label>Amarre de los tirantes <small>(solo en el rango de tus tirantes)</small></label>
+      <div class="amarre-row">
+        <span>Tranquilo</span>
+        <div class="amarre-track"><input type="range" min="0" max="100" step="1" /><div class="amarre-range"><span></span></div></div>
+        <span>Cabeceador</span>
+      </div>
+      <small class="stat-bars"></small>`;
+    const input = box.querySelector('input')!;
+    input.value = String(Math.round(value * 100));
+    const range = box.querySelector<HTMLElement>('.amarre-range span')!;
+    range.style.left = `${b.amarreMin * 100}%`;
+    range.style.width = `${(b.amarreMax - b.amarreMin) * 100}%`;
+    const bars = box.querySelector('.stat-bars')!;
+    const show = () => {
+      const t = tuneBridle(b, Number(input.value) / 100);
+      bars.innerHTML = `${statBar('Estabilidad', t.estabilidad, 3.3)}${statBar('Nervio', t.nervio, 1.95)}${statBar('Giro', t.giro, 4.8)}`;
+    };
+    // Fuera del rango de estos tirantes la perilla vuelve al borde
+    const clampInput = () => {
+      const v = Math.min(b.amarreMax * 100, Math.max(b.amarreMin * 100, Number(input.value)));
+      input.value = String(Math.round(v));
+    };
+    input.addEventListener('input', () => {
+      clampInput();
+      show();
+    });
+    input.addEventListener('change', () => {
+      clampInput();
+      void this.session.saveCustomization({ gear: { ...this.session.data.gear, amarre: Number(input.value) / 100 } });
+      this.onChange('gear');
+    });
+    show();
+    section.appendChild(box);
   }
 }
 
 /** Dibuja el volantín (rombo con varillas) en un canvas 2D. */
-export async function drawKitePreview(canvas: HTMLCanvasElement, design: KiteDesign) {
+export async function drawKitePreview(canvas: HTMLCanvasElement, design: KiteDesign, tipo: KiteType = 'comision') {
   const s = canvas.width;
   const tmp = document.createElement('canvas');
   tmp.width = tmp.height = 256;
@@ -471,12 +608,13 @@ export async function drawKitePreview(canvas: HTMLCanvasElement, design: KiteDes
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, s, s);
   const m = s * 0.06;
+  const r = s / 2 - m;
+  const shape = KITE_SHAPES[tipo];
+  const X = (x: number) => s / 2 + x * r;
+  const Y = (y: number) => s / 2 - y * r;
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(s / 2, m);
-  ctx.lineTo(s - m, s / 2);
-  ctx.lineTo(s / 2, s - m);
-  ctx.lineTo(m, s / 2);
+  shape.pts.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
   ctx.closePath();
   ctx.clip();
   ctx.drawImage(tmp, m, m, s - 2 * m, s - 2 * m);
@@ -484,10 +622,20 @@ export async function drawKitePreview(canvas: HTMLCanvasElement, design: KiteDes
   ctx.strokeStyle = 'rgba(90,60,30,0.7)';
   ctx.lineWidth = Math.max(1, s / 90);
   ctx.beginPath();
-  ctx.moveTo(s / 2, m);
-  ctx.lineTo(s / 2, s - m);
-  ctx.moveTo(m, s / 2);
-  ctx.quadraticCurveTo(s / 2, s / 2 - s * 0.12, s - m, s / 2);
+  if (shape.sticks === 'cross') {
+    const top = Math.max(...shape.pts.map((p) => p[1]));
+    const bottom = Math.min(...shape.pts.map((p) => p[1]));
+    const w = Math.max(...shape.pts.map((p) => p[0]));
+    ctx.moveTo(X(0), Y(top));
+    ctx.lineTo(X(0), Y(bottom));
+    ctx.moveTo(X(-w), Y(shape.bowY));
+    ctx.quadraticCurveTo(X(0), Y(shape.bowY) - s * 0.12, X(w), Y(shape.bowY));
+  } else if (shape.sticks === 'star') {
+    for (let i = 0; i < 3; i++) {
+      ctx.moveTo(X(shape.pts[i][0]), Y(shape.pts[i][1]));
+      ctx.lineTo(X(shape.pts[i + 3][0]), Y(shape.pts[i + 3][1]));
+    }
+  }
   ctx.stroke();
 }
 

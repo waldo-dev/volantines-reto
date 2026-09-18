@@ -19,8 +19,15 @@ export class CameraRig {
   private look = new THREE.Vector3();
   private aim = new THREE.Vector3();
   private freeLook = new THREE.Vector3();
+  private shakeAmount = 0;
+  private shakeOffset = new THREE.Vector3();
 
   constructor(readonly camera: THREE.PerspectiveCamera) {}
+
+  /** Sacudón de cámara (m); se suma al que haya y se apaga solo. */
+  shake(amount: number) {
+    this.shakeAmount = Math.min(0.6, this.shakeAmount + amount);
+  }
 
   snap(player: V3, kite: V3) {
     this.update(1, player, kite, 0, 0, true);
@@ -31,6 +38,7 @@ export class CameraRig {
    * y mira hacia adelante.
    */
   update(dt: number, player: V3, kite: V3 | null, zoomDelta: number, turn = 0, instant = false) {
+    this.camera.position.sub(this.shakeOffset);
     this.zoom = clamp(this.zoom + zoomDelta, 0, 1);
     if (!kite) {
       this.yaw += turn;
@@ -81,5 +89,11 @@ export class CameraRig {
     pitch = Math.max(pitch, kitePitch - (halfFov - this.topMargin));
     this.aim.set(cam.x + lx, cam.y + Math.tan(pitch) * lh, cam.z + lz);
     this.camera.lookAt(this.aim);
+
+    // El sacudón mueve la cámara sin cambiar hacia dónde mira; se descuenta al inicio del próximo cuadro
+    const s = this.shakeAmount;
+    this.shakeOffset.set((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+    this.camera.position.add(this.shakeOffset);
+    this.shakeAmount = Math.max(0, s - dt * 1.5);
   }
 }

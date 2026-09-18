@@ -16,17 +16,46 @@ export interface InputState {
   dirX: number; // -1..1
   moveX: number; // -1..1 derecha
   moveY: number; // -1..1 adelante
+  /** Tirón seco pedido: queda en true hasta que el juego lo usa (ver `consumeTiron`). */
+  tiron: boolean;
+  /** Dar cuerda rápido (largada): doble toque en soltar y mantener, o la tecla C. */
+  rapido: boolean;
+}
+
+/** Dos toques de soltar más cerca que esto (ms) = dar cuerda rápido. */
+const DOUBLE_TAP_MS = 320;
+
+/** Detecta el doble toque en un botón que se mantiene apretado. */
+class DoubleTap {
+  private lastDown = 0;
+  held = false;
+  rapid = false;
+  down() {
+    const now = performance.now();
+    this.rapid = now - this.lastDown < DOUBLE_TAP_MS;
+    this.lastDown = now;
+    this.held = true;
+  }
+  up() {
+    this.held = false;
+    this.rapid = false;
+  }
 }
 
 export class Input {
-  readonly state: InputState = { tirar: false, soltar: false, dirX: 0, moveX: 0, moveY: 0 };
+  readonly state: InputState = { tirar: false, soltar: false, dirX: 0, moveX: 0, moveY: 0, tiron: false, rapido: false };
   isTouch = false;
   /** Con el menú abierto el juego no recibe entradas. */
   enabled = true;
 
   private keys = new Set<string>();
   private mouseTirar = false;
-  private mouseSoltar = false;
+  private mouseSoltar = new DoubleTap();
+  private keySoltar = new DoubleTap();
+  private touchSoltar = new DoubleTap();
+  private tironRequested = false;
+  /** Botón táctil del tirón (para mostrar enfriamiento y el momento del crítico). */
+  private tironBtn: HTMLElement | null = null;
   private mouseDirX = 0;
   private zoomDelta = 0;
   /** Movimiento horizontal del mouse acumulado (px), para girar la cámara a pie. */
@@ -35,7 +64,7 @@ export class Input {
   private debugRequested = false;
   private menuRequested = false;
 
-  private touch = { tirar: false, soltar: false, dirX: 0, moveX: 0, moveY: 0 };
+  private touch = { tirar: false, dirX: 0, moveX: 0, moveY: 0 };
 
   constructor(private canvas: HTMLCanvasElement, private touchRoot: HTMLElement) {
     window.addEventListener('keydown', (e) => {
@@ -44,24 +73,39 @@ export class Input {
       if (e.code === 'KeyR') this.resetRequested = true;
       if (e.code === 'KeyG') this.debugRequested = true;
       if (e.code === 'KeyM' || e.code === 'Escape') this.menuRequested = true;
+      if (e.code === 'KeyF') this.tironRequested = true;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.keySoltar.down();
       if (e.code === 'Space') e.preventDefault();
     });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+      if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !this.keys.has('ShiftLeft') && !this.keys.has('ShiftRight')) this.keySoltar.up();
+    });
     window.addEventListener('blur', () => {
       this.keys.clear();
-      this.mouseTirar = this.mouseSoltar = false;
+      this.mouseTirar = false;
+      this.mouseSoltar.up();
+      this.keySoltar.up();
     });
 
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Clic del medio = tirón: que no active el desplazamiento automático del navegador
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
     canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType !== 'mouse') return;
       if (e.button === 0) this.mouseTirar = true;
-      if (e.button === 2) this.mouseSoltar = true;
+      if (e.button === 1) {
+        e.preventDefault();
+        this.tironRequested = true;
+      }
+      if (e.button === 2) this.mouseSoltar.down();
     });
     window.addEventListener('pointerup', (e) => {
       if (e.pointerType !== 'mouse') return;
       if (e.button === 0) this.mouseTirar = false;
-      if (e.button === 2) this.mouseSoltar = false;
+      if (e.button === 2) this.mouseSoltar.up();
     });
     window.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'mouse') return;
@@ -123,12 +167,30 @@ export class Input {
     this.resetRequested = true;
   }
 
+  /** El juego ya usó el tirón pedido. */
+  consumeTiron() {
+    this.state.tiron = false;
+  }
+
+  /**
+   * Estado del botón táctil del tirón: `ready` sin enfriamiento, `hot` justo al cruzarse
+   * (el momento del golpe crítico).
+   */
+  setTironState(visible: boolean, ready: boolean, hot: boolean) {
+    const b = this.tironBtn;
+    if (!b) return;
+    b.hidden = !visible;
+    b.classList.toggle('cooling', !ready);
+    b.classList.toggle('hot', hot && ready);
+  }
+
   update(): InputState {
     const k = this.keys;
     const s = this.state;
     if (!this.enabled) {
-      s.tirar = s.soltar = false;
+      s.tirar = s.soltar = s.tiron = s.rapido = false;
       s.dirX = s.moveX = s.moveY = 0;
+      this.tironRequested = false;
       return s;
     }
     const kx = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
@@ -136,7 +198,12 @@ export class Input {
     const keySteer = (k.has('KeyE') ? 1 : 0) - (k.has('KeyQ') ? 1 : 0);
 
     s.tirar = this.mouseTirar || k.has('Space') || this.touch.tirar;
-    s.soltar = this.mouseSoltar || k.has('ShiftLeft') || k.has('ShiftRight') || this.touch.soltar;
+    s.soltar = this.mouseSoltar.held || this.keySoltar.held || this.touchSoltar.held || k.has('KeyC');
+    s.rapido = this.mouseSoltar.rapid || this.keySoltar.rapid || this.touchSoltar.rapid || k.has('KeyC');
+    if (this.tironRequested) {
+      s.tiron = true;
+      this.tironRequested = false;
+    }
     s.dirX = keySteer !== 0 ? keySteer : this.isTouch ? this.touch.dirX : this.mouseDirX;
     s.moveX = clamp(kx + this.touch.moveX, -1, 1);
     s.moveY = clamp(ky + this.touch.moveY, -1, 1);
@@ -151,15 +218,20 @@ export class Input {
     root.innerHTML = `
       <div class="joy-zone"><div class="joy-base" hidden><div class="joy-knob"></div></div></div>
       <div class="steer-zone"><span class="steer-hint">Arrastra para dirigir · pellizca para zoom</span></div>
-      <div class="release-btn">SOLTAR</div>
+      <div class="release-btn">SOLTAR<small>2× rápido</small></div>
       <div class="pull-btn">TIRAR</div>
+      <div class="tiron-btn" hidden>⚡<small>TIRÓN</small></div>
       <button class="touch-btn reset-btn">↺ Reiniciar</button>
     `;
     const $ = <T extends HTMLElement>(sel: string) => root.querySelector(sel) as T;
     this.bindJoystick($('.joy-zone'), $('.joy-base'), $('.joy-knob'));
     this.bindSteer($('.steer-zone'));
     this.bindHold($('.pull-btn'), (v) => (this.touch.tirar = v));
-    this.bindHold($('.release-btn'), (v) => (this.touch.soltar = v));
+    this.bindHold($('.release-btn'), (v) => (v ? this.touchSoltar.down() : this.touchSoltar.up()));
+    this.tironBtn = $('.tiron-btn');
+    this.bindHold(this.tironBtn, (v) => {
+      if (v) this.tironRequested = true;
+    });
     $('.reset-btn').addEventListener('click', () => this.requestReset());
   }
 

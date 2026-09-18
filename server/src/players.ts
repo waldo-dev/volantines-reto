@@ -10,7 +10,10 @@ import {
   isSpecialDesign,
   levelInfo,
   owns,
+  MAX_TROPHIES,
+  sanitizeAmarre,
   sanitizeDesign,
+  sanitizeTrophy,
   sanitizeLook,
   type GameEvents,
   type Gear,
@@ -18,11 +21,10 @@ import {
   type Look,
   type Progress,
   type Stats,
+  type Trophy,
 } from '@volantines/shared';
 import type { PoolClient } from 'pg';
 import { pool } from './db';
-
-const MAX_CAPTURED = 30;
 
 interface Row {
   id: number;
@@ -33,7 +35,7 @@ interface Row {
   look: Partial<Look>;
   design: Partial<KiteDesign>;
   gear: Partial<Gear>;
-  captured: KiteDesign[];
+  captured: unknown[];
   last_report: Date;
 }
 
@@ -43,7 +45,7 @@ export interface PlayerState extends Progress {
   look: Look;
   design: KiteDesign;
   gear: Gear;
-  captured: KiteDesign[];
+  captured: Trophy[];
   lastReport: Date;
 }
 
@@ -65,7 +67,8 @@ export async function loadPlayer(db: Db, id: number, forUpdate = false): Promise
     look: sanitizeLook(r.look),
     design: sanitizeDesign({ ...DEFAULT_DESIGN, ...r.design }),
     gear: { ...DEFAULT_GEAR, ...r.gear },
-    captured: r.captured ?? [],
+    // Los trofeos viejos eran solo el diseño: se convierten al leerlos
+    captured: (r.captured ?? []).map((t) => sanitizeTrophy(t)).filter((t): t is Trophy => !!t),
     owned: inv.rows.map((i) => i.item),
     achievements: ach.rows.map((a) => a.achievement_id),
     lastReport: r.last_report,
@@ -145,12 +148,16 @@ export async function saveCustomization(p: PlayerState, db: PoolClient, body: { 
   }
   if (body.gear) {
     const g = { ...p.gear };
-    for (const kind of ['kite', 'line', 'reel', 'bridle'] as const) {
+    for (const kind of ['kite', 'line', 'reel', 'bridle', 'bag', 'pole'] as const) {
       const id = body.gear[kind];
       if (typeof id !== 'string' || !catalogItem(`${kind}:${id}`)) continue;
       if (!owns(p, `${kind}:${id}`)) throw new HttpError(403, 'Ese equipo todavía no es tuyo.');
       g[kind] = id;
     }
+    // El cliente manda el equipo completo: sin perilla, los tirantes quedan como vienen
+    const amarre = sanitizeAmarre(body.gear.amarre);
+    if (amarre === undefined) delete g.amarre;
+    else g.amarre = amarre;
     p.gear = g;
   }
   await db.query('UPDATE players SET look = $2, design = $3, gear = $4 WHERE id = $1', [p.id, p.look, p.design, p.gear]);
@@ -174,8 +181,11 @@ export async function report(p: PlayerState, db: PoolClient, events: Partial<Gam
   // Solo se guardan tantos diseños capturados como capturas aceptó el reporte
   const accepted = p.stats.captures - capturesBefore;
   if (Array.isArray(captured) && accepted > 0) {
-    const fresh = captured.slice(0, accepted).map((d) => sanitizeDesign(d));
-    p.captured = [...fresh, ...p.captured].slice(0, MAX_CAPTURED);
+    const fresh = captured
+      .slice(0, accepted)
+      .map((t) => sanitizeTrophy(t))
+      .filter((t): t is Trophy => !!t);
+    p.captured = [...fresh, ...p.captured].slice(0, MAX_TROPHIES);
   }
   await db.query('UPDATE players SET xp = $2, coins = $3, stats = $4, captured = $5, last_report = now() WHERE id = $1', [
     p.id,

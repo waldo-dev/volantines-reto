@@ -996,3 +996,470 @@ body {
     display: none;
   }
 }
+
+/* --- Fase 1: combate con técnica --- */
+.snd-btn {
+  background: none;
+  border: 0;
+  font-size: 18px;
+  padding: 0 0 0 4px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.feed {
+  position: absolute;
+  top: 124px;
+  right: var(--sr);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: min(320px, 40vw);
+}
+
+.feed-line {
+  font-size: 13px;
+  padding: 4px 10px;
+  transition: opacity 0.2s;
+}
+
+.feed-line .me {
+  color: #ffd84a;
+  font-weight: 700;
+}
+
+.feed-line .tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffb347;
+  margin-left: 4px;
+}
+
+.announce {
+  position: absolute;
+  top: 26%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.ann {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: ann-pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 18px rgba(0, 0, 0, 0.35);
+}
+
+.ann b {
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  font-style: italic;
+}
+
+.ann small {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.ann.cut b {
+  color: #ffffff;
+}
+
+.ann.crit b {
+  color: #7fe3ff;
+}
+
+.ann.combo b {
+  color: #ffd84a;
+  font-size: 52px;
+}
+
+.ann.streak b {
+  color: #ff8a3d;
+  font-size: 50px;
+}
+
+.ann.bad b {
+  color: #ff8b80;
+  font-size: 34px;
+}
+
+@keyframes ann-pop {
+  from {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.streak-badge {
+  margin-top: 6px;
+  border-radius: 6px;
+  padding: 2px 8px;
+  background: linear-gradient(90deg, rgba(200, 70, 20, 0.9), rgba(240, 150, 30, 0.9));
+  font-weight: 800;
+  animation: glow 0.8s infinite alternate;
+}
+
+@keyframes glow {
+  to {
+    box-shadow: 0 0 18px rgba(255, 150, 40, 0.9);
+  }
+}
+
+.crit-hint {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 22px;
+  font-weight: 900;
+  color: #7fe3ff;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
+  animation: blink 0.12s infinite alternate;
+  white-space: nowrap;
+}
+
+.release-btn,
+.tiron-btn {
+  flex-direction: column;
+  line-height: 1.05;
+}
+
+.release-btn small,
+.tiron-btn small {
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.tiron-btn {
+  position: absolute;
+  right: calc(max(24px, env(safe-area-inset-right)) + 16px);
+  bottom: 146px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: rgba(240, 190, 40, 0.5);
+  transition: opacity 0.15s;
+}
+
+.tiron-btn.cooling {
+  opacity: 0.4;
+}
+
+.tiron-btn.hot {
+  background: rgba(90, 210, 255, 0.85);
+  animation: tiron-pulse 0.15s infinite alternate;
+}
+
+.tiron-btn.active {
+  filter: brightness(1.6);
+  transform: scale(0.93);
+}
+
+@keyframes tiron-pulse {
+  to {
+    transform: scale(1.15);
+  }
+}
+
+@media (max-width: 700px) {
+  .ann b {
+    font-size: 32px;
+  }
+  .ann.combo b,
+  .ann.streak b {
+    font-size: 36px;
+  }
+}
+
+@media (max-height: 500px) {
+  .feed {
+    top: calc(var(--st) + 118px);
+    max-width: 38vw;
+  }
+  .feed-line:nth-child(n + 4) {
+    display: none;
+  }
+  .feed-line {
+    font-size: 11px;
+    padding: 3px 8px;
+  }
+  .announce {
+    top: 27%;
+  }
+  .ann b {
+    font-size: 30px;
+  }
+  .ann.combo b,
+  .ann.streak b {
+    font-size: 34px;
+  }
+  .ann small {
+    font-size: 12px;
+  }
+  .streak-badge {
+    margin-top: 3px;
+  }
+  .crit-hint {
+    top: 44%;
+    font-size: 17px;
+  }
+  .tiron-btn {
+    width: 60px;
+    height: 60px;
+    right: calc(var(--sr) + 14px);
+    bottom: calc(var(--sb) + 98px);
+    font-size: 20px;
+  }
+}
+
+/* Barras de ataque, vida y recuperación de los hilos en la tienda */
+.stat-bars {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.stat-bar {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-bar i {
+  font-style: normal;
+  font-size: 11px;
+}
+
+.stat-bar > span {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+
+.stat-bar > span > span {
+  display: block;
+  height: 100%;
+  background: #e0892b;
+}
+
+.stat-note {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+/* --- Fase 2: tienda de equipo --- */
+.shop-list .opt {
+  width: 220px;
+}
+
+.shop-thumb {
+  width: 56px;
+  height: 56px;
+}
+
+.rarity {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+}
+
+.r-comun {
+  color: #6b7482;
+}
+
+.r-raro {
+  color: #1f7ae0;
+}
+
+.r-epico {
+  color: #9b3fd6;
+}
+
+.r-legendario {
+  color: #d9820b;
+}
+
+.opt.on .rarity,
+.opt .rarity {
+  font-style: normal;
+}
+
+.line-swatch {
+  display: block;
+  width: 70%;
+  height: 5px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.amarre {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 2px solid #e3dccd;
+  color: #1f2a37;
+  max-width: 460px;
+}
+
+.amarre label {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.amarre label small {
+  font-weight: 400;
+  color: #6b7482;
+}
+
+.amarre-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #6b7482;
+  margin-top: 6px;
+}
+
+.amarre-row input {
+  width: 100%;
+  accent-color: #0039a6;
+}
+
+/* Tramo de la perilla que permiten los tirantes elegidos (justo bajo la barra) */
+.amarre-track input {
+  display: block;
+  margin: 0;
+}
+
+.amarre-range {
+  position: relative;
+  height: 4px;
+  margin: 2px 8px 6px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 2px;
+}
+
+.amarre-range span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #0039a6;
+  border-radius: 2px;
+}
+
+.amarre .stat-bars {
+  max-width: 320px;
+}
+
+/* --- Fase 3: mochila y casa --- */
+.bottom-stack {
+  position: absolute;
+  bottom: var(--sb);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.bottom-stack > .launch-btn,
+.bottom-stack > .fallen,
+.bottom-stack > .home-hint {
+  position: static;
+  transform: none;
+}
+
+.home-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #9fe7ff;
+  animation: glow 0.9s infinite alternate;
+}
+
+.home-arrow {
+  display: inline-block;
+  font-size: 20px;
+}
+
+.bag-stat.full b {
+  color: var(--warn);
+}
+
+/* Álbum de trofeos */
+.trophy-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.trophy-card small {
+  font-size: 11px;
+  color: #6b7482;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.shop-list .opt.tool {
+  width: 200px;
+}
+
+/* --- Fase 4: escenarios --- */
+.bonus-chip,
+.cable-chip {
+  margin-top: 6px;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.bonus-chip {
+  background: rgba(240, 190, 40, 0.85);
+  color: #3a2a00;
+}
+
+.cable-chip {
+  background: rgba(200, 40, 30, 0.85);
+  animation: blink 0.25s infinite alternate;
+}
+
+.map-card.locked {
+  opacity: 0.55;
+}
+
+.map-card .map-wind {
+  color: #0039a6;
+  font-weight: 600;
+}

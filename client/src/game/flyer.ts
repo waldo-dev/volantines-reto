@@ -58,6 +58,8 @@ export class Flyer {
   lastDamager: string | null = null;
   /** Segundos seguidos en el aire (para el logro "Aguante"). */
   flightTime = 0;
+  /** En racha "¡Encachado!": el hilo corta más, se recupera más y brilla. */
+  boosted = false;
   /** Datos de bot. */
   brain: BotBrain | null = null;
   home: V3;
@@ -232,12 +234,13 @@ export class Flyer {
     }
     this.thread.line.visible = visible;
     if (visible) this.thread.update();
+    this.thread.setGlow(visible && this.boosted, time);
     this.tag.sprite.position.set(this.pos.x, this.pos.y + 2.25, this.pos.z);
   }
 
   lineBody(): LineBody | null {
     if (!this.flying) return null;
-    return { id: this.id, pts: this.rope.pts, kite: this.kite!, lo: this.loadout };
+    return { id: this.id, pts: this.rope.pts, kite: this.kite!, lo: this.loadout, boost: this.boosted };
   }
 
   /** Dirección horizontal del viento que usan los bots para ubicarse. */

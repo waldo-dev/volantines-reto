@@ -5,11 +5,14 @@ import type { Rope } from '@volantines/shared';
 export class ThreadView {
   readonly line: THREE.Line;
   private positions: Float32Array;
+  private color: string;
+  private glowing = false;
 
   constructor(
     private rope: Rope,
     color: string,
   ) {
+    this.color = color;
     this.positions = new Float32Array(rope.n * 3);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
@@ -18,7 +21,16 @@ export class ThreadView {
   }
 
   setColor(color: string) {
-    (this.line.material as THREE.LineBasicMaterial).color.set(color);
+    this.color = color;
+    if (!this.glowing) (this.line.material as THREE.LineBasicMaterial).color.set(color);
+  }
+
+  /** En racha el hilo brilla naranjo y titila. */
+  setGlow(on: boolean, time: number) {
+    const m = this.line.material as THREE.LineBasicMaterial;
+    if (on) m.color.setHSL(0.08 + 0.03 * Math.sin(time * 14), 1, 0.6);
+    else if (this.glowing) m.color.set(this.color);
+    this.glowing = on;
   }
 
   update() {
