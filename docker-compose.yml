@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: volantines-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: volantines
+      POSTGRES_PASSWORD: volantines
+      POSTGRES_DB: volantines
+    ports:
+      - "5433:5432"
+    volumes:
+      - volantines-data:/var/lib/postgresql/data
+
+volumes:
+  volantines-data:
