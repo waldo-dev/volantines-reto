@@ -22,6 +22,7 @@ import {
 } from '@volantines/shared';
 import { Character } from '../entities/character';
 import { COLOR_SWATCHES, PATTERNS, SPECIALS, drawDesign, isSpecial, type KiteDesign } from '../kiteDesigns';
+import { FPS_CAPS, QUALITY_LEVELS, type Graphics } from '../graphics';
 import { KITE_SHAPES } from '../kiteShapes';
 import { CHARACTERS, GLASSES, HATS, type Look } from '../profile';
 import type { Session } from '../session';
@@ -32,6 +33,9 @@ export interface NetControls {
   /** null = modo solo; '' = partida rápida; 'NUEVA' = sala privada; otro = código de sala. */
   play: (room: string | null) => Promise<void>;
   status: () => { room: string; isPrivate: boolean; players: string[] } | null;
+  /** Opciones de gráficos. */
+  graphics: () => Graphics;
+  setGraphics: (g: Graphics) => void;
   /** Mapa elegido y cómo cambiarlo (en modo solo cambia al tiro; online vale para la próxima sala). */
   map: () => MapId;
   selectMap: (id: MapId) => void;
@@ -312,6 +316,7 @@ export class Menu {
     card('🌐 Partida rápida', 'Entra a una sala con otros jugadores online.', () => void this.play(''));
     card('🔒 Crear sala privada', 'Te damos un código para invitar a tus amigos.', () => void this.play('NUEVA'));
 
+    this.renderGraphics();
     const join = this.section('Unirse con código', 'Pídele el código de 5 letras a quien creó la sala.');
     const form = document.createElement('form');
     form.className = 'name-form';
@@ -552,6 +557,25 @@ export class Menu {
     for (const p of POLES) {
       const extra = `<small>alcance ${p.alcance} m · hasta ${p.altura} m de alto${p.bono ? ` · +${Math.round(p.bono * 100)}% 🪙` : ''}</small>`;
       this.shopOption(pole, `pole:${p.id}`, p.nombre, poleId === p.id, () => this.setGear('pole', p.id), extra);
+    }
+  }
+
+  /** Calidad gráfica y tope de FPS (se guardan en este navegador). */
+  private renderGraphics() {
+    const g = this.net.graphics();
+    const q = this.section('Gráficos', QUALITY_LEVELS.find((l) => l.id === g.quality)!.hint);
+    for (const l of QUALITY_LEVELS) {
+      this.option(q, l.nombre, g.quality === l.id, () => {
+        this.net.setGraphics({ ...g, quality: l.id });
+        this.render();
+      });
+    }
+    const f = this.section('Cuadros por segundo (máximo)', 'Con menos cuadros el teléfono se calienta menos y dura más la batería.');
+    for (const c of FPS_CAPS) {
+      this.option(f, c.nombre, g.fps === c.id, () => {
+        this.net.setGraphics({ ...g, fps: c.id });
+        this.render();
+      });
     }
   }
 

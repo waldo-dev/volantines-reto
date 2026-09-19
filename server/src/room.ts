@@ -8,8 +8,12 @@ import {
   NET_RATE,
   Rope,
   applyNetKite,
+  REWARDS,
   bagOf,
   cableSegments,
+  captureValue,
+  trophyOf,
+  MAX_STATS,
   canReach,
   createBrain,
   createKite,
@@ -55,11 +59,30 @@ import {
   type MapId,
   type NetPlayerInfo,
   type NetState,
+  type EventKind,
+  type GameEvents,
   type Progress,
   type ServerMsg,
+  type Trophy,
   type V3,
 } from '@volantines/shared';
 import type { WebSocket } from 'ws';
+import { validateState, type Accepted, type Issue } from './validate';
+
+/**
+ * Lo que la sala necesita de afuera (base de datos y telemetría). Sin servicios (tests) no se acredita nada.
+ * `credit` suma premios a una cuenta y devuelve el jugador actualizado y los premios para avisarle.
+ */
+export interface RoomServices {
+  credit(accountId: number, events: Partial<GameEvents>, trophies: Trophy[]): Promise<{ player: Record<string, unknown>; rewards: unknown } | null>;
+  event(kind: EventKind, accountId: number | null, data?: Record<string, unknown>): void;
+}
+
+/** Se acredita a la cuenta un rato después del último evento, para juntar varios en una sola escritura. */
+const CREDIT_DELAY = 800;
+/** Sospecha (problemas por estado, se desvanece con el tiempo) desde la que se deja un aviso en la telemetría. */
+const SUSPECT_REPORT = 40;
+const SUSPECT_DECAY = 4; // por segundo
 
 const TICK = 1 / NET_RATE;
 const SUBSTEPS = 6; // física a 120 Hz para bots y volantines caídos
@@ -111,6 +134,17 @@ interface Human {
   /** Volantines capturados que lleva en la mochila (se cobran al llegar a su casa). */
   bag: CarryItem[];
   home: V3;
+  /** Cuenta (null para invitados): a ella acredita el servidor lo que pasa en la sala. */
+  accountId: number | null;
+  /** Último estado aceptado, para validar el siguiente. */
+  accepted: Accepted | null;
+  /** Sospecha acumulada por estados imposibles (se desvanece sola). */
+  suspicion: number;
+  suspicionAt: number;
+  issues: Partial<Record<Issue, number>>;
+  lastSuspectReport: number;
+  /** Premios que esperan ser acreditados a la cuenta. */
+  credit: { events: Partial<GameEvents>; trophies: Trophy[]; timer: NodeJS.Timeout | null };
 }
 
 class Bot implements BotBody {
@@ -227,6 +261,7 @@ export class Room {
     readonly isPrivate: boolean,
     private onEmpty: (room: Room) => void,
     readonly map: MapId = 'cerro',
+    private services: RoomServices | null = null,
   ) {
     // El terreno y el viento son los del mapa de la sala (se activa antes de simular)
     useMap(map);
@@ -243,7 +278,7 @@ export class Room {
     clearInterval(this.timer);
   }
 
-  join(ws: WebSocket, p: { name: string; look: Look; design: KiteDesign; gear: Gear; progress: Progress | null }): Human {
+  join(ws: WebSocket, p: { name: string; look: Look; design: KiteDesign; gear: Gear; progress: Progress | null; accountId?: number | null }): Human {
     useMap(this.map);
     const used = new Set([...this.humans.values()].map((h) => h.slot));
     let slot = 0;
@@ -266,6 +301,13 @@ export class Room {
       scratchPts: [],
       bag: [],
       home: { ...spawnSlot(slot) },
+      accountId: p.accountId ?? null,
+      accepted: null,
+      suspicion: 0,
+      suspicionAt: 0,
+      issues: {},
+      lastSuspectReport: -Infinity,
+      credit: { events: {}, trophies: [], timer: null },
     };
     this.humans.set(h.id, h);
     this.syncBots();
@@ -277,6 +319,10 @@ export class Room {
 
   leave(h: Human) {
     useMap(this.map);
+    if (h.credit.timer) {
+      clearTimeout(h.credit.timer);
+      this.flushCredit(h);
+    }
     this.humans.delete(h.id);
     this.combos.delete(h.id);
     this.syncBots();
@@ -293,9 +339,58 @@ export class Room {
     this.broadcast({ t: 'info', info: this.info() });
   }
 
-  setState(h: Human, s: NetState) {
+  /**
+   * Estado que manda el cliente: se valida y corrige (ver validate.ts) antes de usarlo.
+   * `now` en segundos (se puede pasar en los tests).
+   */
+  setState(h: Human, raw: NetState, now = performance.now() / 1000) {
+    const v = validateState(h.accepted, raw, now, h.loadout);
+    if (!v) return;
+    const s = v.state;
+    if (v.issues.length) this.suspect(h, v.issues, now);
     if (s.fid !== h.state?.fid) h.integrity = 100; // volantín nuevo
     h.state = s;
+    h.accepted = { s, at: now };
+  }
+
+  /** Suma sospecha por estados imposibles y, si se acumula, deja un aviso en la telemetría (una vez por minuto). */
+  private suspect(h: Human, issues: Issue[], now: number) {
+    h.suspicion = Math.max(0, h.suspicion - (now - h.suspicionAt) * SUSPECT_DECAY) + issues.length;
+    h.suspicionAt = now;
+    for (const i of issues) h.issues[i] = (h.issues[i] ?? 0) + 1;
+    if (h.suspicion >= SUSPECT_REPORT && now - h.lastSuspectReport > 60) {
+      h.lastSuspectReport = now;
+      this.services?.event('suspect', h.accountId, { name: h.name, issues: h.issues, room: this.code });
+      h.issues = {};
+    }
+  }
+
+  /** Premios que vio el servidor: se juntan y se acreditan a la cuenta (los invitados los cuentan en su navegador). */
+  private award(h: Human | undefined, events: Partial<GameEvents>, trophies: Trophy[] = []) {
+    if (!h || h.accountId === null || !this.services) return;
+    const c = h.credit;
+    for (const [k, v] of Object.entries(events) as [keyof GameEvents, number][]) {
+      c.events[k] = MAX_STATS.includes(k) ? Math.max(c.events[k] ?? 0, v) : (c.events[k] ?? 0) + v;
+    }
+    c.trophies.push(...trophies);
+    if (c.timer) return;
+    c.timer = setTimeout(() => this.flushCredit(h), CREDIT_DELAY);
+  }
+
+  private flushCredit(h: Human) {
+    const c = h.credit;
+    c.timer = null;
+    const events = c.events;
+    const trophies = c.trophies;
+    c.events = {};
+    c.trophies = [];
+    if (h.accountId === null || !this.services) return;
+    void this.services
+      .credit(h.accountId, events, trophies)
+      .then((r) => {
+        if (r) this.send(h, { t: 'rewards', player: r.player, rewards: r.rewards });
+      })
+      .catch((err) => console.warn('No se pudo acreditar a la cuenta:', (err as Error).message));
   }
 
   /** El cliente avisa que su hilo se cortó solo (desgaste por sobretensión). */
@@ -349,12 +444,18 @@ export class Room {
   /** Anuncia un corte: suma el combo del que cortó (y su racha) y borra el del cortado. */
   private announceCut(victim: string, victimLo: Loadout, cutter: string | null) {
     resetCombo(this.combo(victim));
+    const vh = this.humans.get(victim);
+    if (vh && cutter) {
+      this.award(vh, { cutBy: 1 });
+      this.services?.event('cut_by', vh.accountId, { map: this.map });
+    }
     if (!cutter) {
       this.broadcast({ t: 'cut', victim, cutter: null, ...(this.cableHits.has(victim) ? { cable: 1 as const } : {}) });
       return;
     }
     const cutterKite = this.humans.get(cutter)?.scratchKite ?? this.bots.find((b) => b.id === cutter)?.kite;
     const bonus = !!cutterKite && inBonus(mapById(this.map), cutterKite.pos);
+    const ch = this.humans.get(cutter);
     const { combo, streakStarted } = registerCut(this.combo(cutter), this.time);
     const cutterLo = this.humans.get(cutter)?.loadout ?? this.bots.find((b) => b.id === cutter)?.loadout;
     this.broadcast({
@@ -366,6 +467,11 @@ export class Room {
       ...(streakStarted ? { streak: 1 as const } : {}),
       ...(bonus ? { bonus: 1 as const } : {}),
     });
+    if (ch) {
+      const upset = !!cutterLo && isUpset(cutterLo.line, victimLo.line);
+      this.award(ch, { cuts: 1, comboCuts: combo > 1 ? 1 : 0, bestCombo: combo, upsets: upset ? 1 : 0, bonusCuts: bonus ? 1 : 0 });
+      this.services?.event('cut', ch.accountId, { combo, upset, bonus, map: this.map, victimBot: !vh });
+    }
   }
 
   /** Bots de relleno: 3 con una persona, 2 con dos, 1 con tres, ninguno con cuatro o más. */
@@ -491,6 +597,11 @@ export class Room {
       if (h?.state) h.tailCutFid = h.state.fid;
       const p: [number, number, number] = [Math.round(tc.point.x * 100) / 100, Math.round(tc.point.y * 100) / 100, Math.round(tc.point.z * 100) / 100];
       this.broadcast({ t: 'tail', by: tc.by, victim: tc.victim, p });
+      const by = this.humans.get(tc.by);
+      if (by) {
+        this.award(by, { tailCuts: 1 });
+        this.services?.event('tail', by.accountId);
+      }
     }
     this.contacts.clear();
     this.crossingOf.clear();
@@ -502,7 +613,14 @@ export class Room {
       lastDamager.set(c.a, c.b);
       lastDamager.set(c.b, c.a);
       const p: [number, number, number] = [Math.round(c.point.x * 100) / 100, Math.round(c.point.y * 100) / 100, Math.round(c.point.z * 100) / 100];
-      for (const cr of c.crits) this.broadcast({ t: 'crit', by: cr.by, victim: cr.victim, kind: cr.kind, p });
+      for (const cr of c.crits) {
+        this.broadcast({ t: 'crit', by: cr.by, victim: cr.victim, kind: cr.kind, p });
+        const by = this.humans.get(cr.by);
+        if (by) {
+          this.award(by, { crits: 1 });
+          this.services?.event('crit', by.accountId, { kind: cr.kind });
+        }
+      }
     }
     for (const h of this.humans.values()) {
       const l = lines.find((x) => x.id === h.id);
@@ -566,7 +684,17 @@ export class Room {
     for (const h of this.humans.values()) {
       if (!h.bag.length || !h.state) continue;
       if (Math.hypot(h.state.p[0] - h.home.x, h.state.p[2] - h.home.z) > DELIVERY_RADIUS) continue;
-      this.broadcast({ t: 'delivered', by: h.id, items: h.bag.splice(0) });
+      const items = h.bag.splice(0);
+      this.broadcast({ t: 'delivered', by: h.id, items });
+      // Lo que paga la entrega lo calcula el servidor con el colihue que de verdad tiene
+      const pole = poleOf(h.gear.pole);
+      const coins = items.reduce((sum, it) => sum + captureValue(it.kite, pole), 0);
+      this.award(
+        h,
+        { captures: items.length, captureBonus: coins - REWARDS.capture * items.length, bestDelivery: items.length },
+        items.map((it) => trophyOf(it)),
+      );
+      this.services?.event('delivery', h.accountId, { n: items.length, coins, map: this.map });
     }
 
     // Snapshot para todos
@@ -612,6 +740,8 @@ export class Room {
 export class Lobby {
   private rooms = new Map<string, Room>();
 
+  constructor(private services: RoomServices | null = null) {}
+
   /** '' = partida rápida (sala pública con espacio en ese mapa), 'NUEVA' = sala privada nueva, otro = código. */
   find(request: string, map: MapId = 'cerro'): Room | string {
     const code = request.trim().toUpperCase();
@@ -637,6 +767,7 @@ export class Lobby {
         this.rooms.delete(r.code);
       },
       map,
+      this.services,
     );
     this.rooms.set(code, room);
     return room;

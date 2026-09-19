@@ -82,6 +82,8 @@ export type ServerMsg =
   | { t: 'tail'; by: string; victim: string; p: N3 }
   /** Alguien llegó a su casa con volantines en la mochila. */
   | { t: 'delivered'; by: string; items: CarryItem[] }
+  /** El servidor acreditó premios a tu cuenta (online): tu jugador actualizado y lo que ganaste. */
+  | { t: 'rewards'; player: Record<string, unknown>; rewards: unknown }
   | { t: 'fallen'; id: string; owner: string; ownerName: string; design: KiteDesign; kite: string; p: N3; h: number }
   | { t: 'captured'; fallen: string; by: string }
   | { t: 'error'; msg: string };

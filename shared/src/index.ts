@@ -13,3 +13,4 @@ export * from './botControl';
 export * from './combo';
 export * from './collect';
 export * from './maps';
+export * from './telemetry';

@@ -129,6 +129,8 @@ const inPond = (x: number, z: number, margin = 0) => {
 export interface WorldQuality {
   shadows: boolean;
   mobile: boolean;
+  /** Cuánto paisaje (árboles, pasto, casas): 1 = todo. Sin él, según si es teléfono. */
+  density?: number;
 }
 
 export interface World {
@@ -141,7 +143,7 @@ export interface World {
 /** Construye el mundo del mapa (que ya tiene que estar activo con `useMap`). */
 export function createWorld(scene: THREE.Scene, q: WorldQuality, map: MapDef): World {
   const rand = mulberry32(18_09);
-  const density = q.mobile ? 0.55 : 1;
+  const density = q.density ?? (q.mobile ? 0.55 : 1);
   const theme = THEMES[map.id];
   const SKY_TOP = new THREE.Color(theme.skyTop);
   const SKY_HORIZON = new THREE.Color(theme.skyHorizon);

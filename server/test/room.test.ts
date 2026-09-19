@@ -22,7 +22,20 @@ function state(fid: number, from: [number, number, number], to: [number, number,
     v: [0, 0],
     f: 0,
     fid,
-    k: { p: [to[0], to[1] + 20, to[2]], v: [0, 0, 0], h: 0, a: 0.7, L: 57, r: 0, T: 0.5, w: 0, g: 0, s: 0, ...(maneuver ?? {}) },
+    // Hilo justo lo necesario para llegar de la mano al volantín (la validación del servidor lo exige)
+    k: {
+      p: [to[0], to[1] + 20, to[2]],
+      v: [0, 0, 0],
+      h: 0,
+      a: 0.7,
+      L: Math.max(57, Math.hypot(to[0] - from[0], to[1] + 20 - (from[1] + 0.05), to[2] - from[2]) + 1),
+      r: 0,
+      T: 0.5,
+      w: 0,
+      g: 0,
+      s: 0,
+      ...(maneuver ?? {}),
+    },
     rope,
   };
 }
@@ -118,7 +131,7 @@ describe('sala online: colas', () => {
     const beto = room.join(sb.ws, profile('Beto'));
     const tick = () => (room as unknown as { tick(): void }).tick();
     // Ana vuela una cambucha (con cola) hacia +x; Beto pasa su hilo justo por donde le cuelga la cola
-    const anaState = state(1, [0, 10, 0], [40, 30, 0]);
+    const anaState = state(1, [0, 10, 0], [40, 10, 0]);
     const k = anaState.k!;
     const pts = Array.from({ length: 10 }, (_, i) => ({ x: anaState.rope![i * 3], y: anaState.rope![i * 3 + 1], z: anaState.rope![i * 3 + 2] }));
     const a = { x: 0, y: 0, z: 0 };
@@ -126,7 +139,8 @@ describe('sala online: colas', () => {
     const kite = { pos: { x: k.p[0], y: k.p[1], z: k.p[2] } };
     tailSegment({ id: 'x', pts, kite: kite as never, lo: gearLoadout({ ...DEFAULT_GEAR, kite: 'cambucha' }) }, a, b);
     const mid: [number, number, number] = [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2];
-    const betoState = state(1, [mid[0] - 30, 10, mid[2] - 30], [mid[0] + 30, mid[1] * 2 - 10, mid[2] + 30], { m: 1, ma: 0.1 });
+    // Hilos de menos de 80 m: los invitados vuelan con el carrete de mano
+    const betoState = state(1, [mid[0] - 18, 10, mid[2] - 18], [mid[0] + 18, mid[1] * 2 - 10, mid[2] + 18], { m: 1, ma: 0.1 });
     room.setState(ana, anaState);
     room.setState(beto, betoState);
     tick();
@@ -203,7 +217,8 @@ describe('sala online: mochila', () => {
     expect(s.msgs.some((m) => m.t === 'captured' && m.by === ana.id)).toBe(false);
     expect(ana.bag).toHaveLength(1);
     // Vuelve a su casa: entrega lo que le queda
-    room.setState(ana, standing(3, ana.home.x, ana.home.z));
+    // Camina a su casa (un rato después: la validación no deja teletransportarse)
+    room.setState(ana, standing(3, ana.home.x, ana.home.z), performance.now() / 1000 + 60);
     s.msgs.length = 0;
     tick();
     const delivered = s.msgs.find((m): m is Extract<ServerMsg, { t: 'delivered' }> => m.t === 'delivered');
@@ -244,5 +259,58 @@ describe('sala online: escenarios', () => {
     tick();
     const cut = s.msgs.find((m): m is Extract<ServerMsg, { t: 'cut' }> => m.t === 'cut' && m.victim === ana.id);
     expect(cut).toMatchObject({ cutter: null, cable: 1 });
+  });
+});
+
+describe('sala online: el servidor acredita a las cuentas', () => {
+  it('cortes y entregas de una cuenta se acreditan (juntos) y se avisan; los invitados no', async () => {
+    const credits: { id: number; events: Record<string, number>; trophies: number }[] = [];
+    const events: string[] = [];
+    const services = {
+      credit: async (id: number, ev: Record<string, number>, trophies: unknown[]) => {
+        credits.push({ id, events: { ...ev }, trophies: trophies.length });
+        return { player: { name: 'Ana', coins: 999 }, rewards: { coins: 55, xp: 110, levelUp: null, achievements: [] } };
+      },
+      event: (kind: string) => void events.push(kind),
+    };
+    const room = new Room('CUENT', true, () => undefined, 'cerro', services as never);
+    rooms.push(room);
+    const sa = fakeSocket();
+    const sb = fakeSocket();
+    const ana = room.join(sa.ws, { ...profile('Ana'), accountId: 7 });
+    const beto = room.join(sb.ws, profile('Beto')); // invitado
+    const tick = () => (room as unknown as { tick(): void }).tick();
+    // Ana corta a Beto
+    room.setState(ana, state(1, A_FROM, A_TO));
+    room.setState(beto, state(1, B_FROM, B_TO));
+    beto.integrity = 0.01;
+    tick();
+    // Y entrega un cóndor en su casa
+    ana.bag.push({ design: DEFAULT_DESIGN, kite: 'condor', owner: 'b1', ownerName: 'Pancho' });
+    room.setState(ana, { p: [ana.home.x, groundHeight(ana.home.x, ana.home.z), ana.home.z], v: [0, 0], f: 0, fid: 2 }, performance.now() / 1000 + 60);
+    tick();
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(credits).toHaveLength(1);
+    expect(credits[0]).toMatchObject({ id: 7, trophies: 1 });
+    // El cóndor es legendario: 30 × 3 = 90 → 60 de extra (lo calcula el servidor con su colihue)
+    expect(credits[0].events).toMatchObject({ cuts: 1, captures: 1, captureBonus: 60, bestDelivery: 1, bestCombo: 1 });
+    expect(sa.msgs.some((m) => m.t === 'rewards')).toBe(true);
+    expect(sb.msgs.some((m) => m.t === 'rewards')).toBe(false);
+    expect(events).toEqual(expect.arrayContaining(['cut', 'cut_by', 'delivery']));
+  });
+
+  it('estados imposibles se corrigen y, si se repiten, quedan como sospechosos', () => {
+    const events: { kind: string; data?: Record<string, unknown> }[] = [];
+    const services = { credit: async () => null, event: (kind: string, _id: number | null, data?: Record<string, unknown>) => void events.push({ kind, data }) };
+    const room = new Room('TRAMP', true, () => undefined, 'cerro', services);
+    rooms.push(room);
+    const s = fakeSocket();
+    const h = room.join(s.ws, profile('Tramposo'));
+    // Avanza 15 m cada 0,05 s (300 m/s) muchas veces seguidas
+    for (let i = 0; i < 60; i++) room.setState(h, { p: [-200 + i * 15, 0, 0], v: [0, 0], f: 0, fid: 1 }, i * 0.05);
+    // En 3 s avanzó lo que se puede correr (con holgura), no 885 m
+    expect(h.state!.p[0]).toBeLessThan(-100);
+    expect(events.filter((e) => e.kind === 'suspect')).toHaveLength(1);
+    expect(events[0].data).toMatchObject({ name: 'Tramposo' });
   });
 });

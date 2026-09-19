@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CATALOG } from '@volantines/shared';
 import { createSession, deleteSession, hashPassword, playerFromToken, validName, validPassword, verifyPassword } from './auth';
 import { migrate, pool } from './db';
+import { adminStats, isAdmin, recordClientBatch } from './telemetry';
 import { attachWebSockets, lobby } from './ws';
 import {
   HttpError,
@@ -32,6 +33,9 @@ const needPlayer = (id: number | null): number => {
 
 /** Intentos fallidos de inicio de sesión por IP, para frenar a quien pruebe claves. */
 const failedLogins = new Map<string, { count: number; until: number }>();
+/** Lotes de telemetría por IP y minuto (para que nadie llene la base). */
+const eventHits = new Map<string, { count: number; since: number }>();
+const EVENTS_PER_MIN = 20;
 
 const routes: Record<string, Handler> = {
   'GET /api/health': async () => ({ ok: true, ...lobby.stats }),
@@ -81,6 +85,15 @@ const routes: Record<string, Handler> = {
       await buy(p, db, String(body?.item ?? ''));
       return { player: publicPlayer(p) };
     }),
+
+  /** Telemetría del navegador (con o sin cuenta). */
+  'POST /api/events': async ({ body, playerId }) => ({ ok: true, saved: await recordClientBatch(body, playerId) }),
+
+  /** Resumen de uso: solo con el token de administración (ADMIN_TOKEN). */
+  'GET /api/admin/stats': async ({ token }) => {
+    if (!isAdmin(token)) throw new HttpError(404, 'Ruta desconocida.');
+    return adminStats();
+  },
 
   'POST /api/me/report': async ({ body, playerId }) =>
     withPlayer(needPlayer(playerId), async (p, db) => {
@@ -145,6 +158,12 @@ const server = http.createServer(async (req, res) => {
   const isLogin = url.pathname === '/api/auth/login';
   const block = failedLogins.get(ip);
   if (isLogin && block && block.until > Date.now()) return send(res, 429, { error: 'Muchos intentos. Espera un minuto.' });
+  if (url.pathname === '/api/events') {
+    const h = eventHits.get(ip);
+    const now = Date.now();
+    if (!h || now - h.since > 60_000) eventHits.set(ip, { count: 1, since: now });
+    else if (++h.count > EVENTS_PER_MIN) return send(res, 429, { error: 'Demasiados eventos.' });
+  }
 
   try {
     const token = req.headers.authorization?.replace(/^Bearer /, '') || undefined;

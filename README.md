@@ -71,6 +71,13 @@ Se eligen en el menú → Jugar (algunos se desbloquean por nivel). Cada uno tie
 **La Playa** (viento fuerte y parejo, también con zona de bono) y **Cerros de Valparaíso** (rachas y cables del tendido que enredan y cortan el hilo).
 En online, la partida rápida y la sala nueva usan el escenario elegido; al entrar con código se usa el de la sala. En desarrollo, `?mapa=playa` en la URL abre ese escenario.
 
+## Datos y seguridad
+
+- **Telemetría:** el juego manda eventos (sesiones, modo, mapa, cortes, entregas, compras) a `POST /api/events`; se guardan en la tabla `events`. Las vistas `daily_players` y `retention` dan jugadores por día y retención a 1 y 7 días.
+- **Resumen de uso:** `GET /api/admin/stats` con `Authorization: Bearer <ADMIN_TOKEN>` (definir `ADMIN_TOKEN` en `.env`, mínimo 16 caracteres; sin él la ruta no existe).
+- **Online con la última palabra del servidor:** cada estado que manda un cliente se valida (velocidad, largo del hilo contra el carrete, distancia del volantín, ritmo del carrete) y se corrige; los estados imposibles repetidos quedan como `suspect` en la telemetría. En salas online, los cortes, críticos, colas y entregas de las cuentas los acredita el servidor (eventos con `source = 'server'`, los que deben usar los rankings).
+- **Gráficos:** menú → Jugar → Gráficos (Automática, Baja, Media, Alta) y tope de cuadros por segundo.
+
 ## Estructura
 
 - `shared/` física del volantín (tirantes, desgaste), cruce y corte de hilos, bots, progresión, tienda y logros. La usan el cliente y el servidor.

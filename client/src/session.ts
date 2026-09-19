@@ -197,12 +197,25 @@ export class Session {
       this.data.owned.push(key);
       this.saveGuest();
       this.onChange();
+      this.onBuy(key);
       return item;
     }
     const r = await api<{ player: PlayerData }>('POST', '/shop/buy', { item: key }, this.token);
     this.data = r.player;
     this.onChange();
+    this.onBuy(key);
     return catalogItem(key);
+  }
+
+  /** Se llama después de cada compra exitosa (telemetría). */
+  onBuy: (key: string) => void = () => undefined;
+
+  /** El servidor acreditó premios a la cuenta en una sala online: jugador actualizado y lo ganado. */
+  applyServer(player: PlayerData, rewards: Rewards) {
+    if (this.isGuest || !player || typeof player !== 'object') return;
+    this.data = player;
+    this.onRewards(rewards);
+    this.onChange();
   }
 
   // --- Eventos de juego ---

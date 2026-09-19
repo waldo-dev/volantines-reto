@@ -56,6 +56,8 @@ import { Sparks } from './game/sparks';
 import { Online } from './net/online';
 import { GameAudio } from './audio';
 import { HomeMarker } from './entities/homeMarker';
+import { Telemetry } from './telemetry';
+import { loadGraphics, preset, saveGraphics, type Graphics } from './graphics';
 
 const FIXED_DT = 1 / 120;
 const WALK_WITH_KITE = 3.5;
@@ -80,9 +82,12 @@ document.addEventListener(
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const isMobile = window.matchMedia('(pointer: coarse)').matches;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isMobile, powerPreference: 'high-performance' });
-let pixelRatio = Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2);
+// Calidad elegida en el menú (Automática por defecto) y tope de FPS
+let graphics = loadGraphics();
+let gfx = preset(graphics.quality, isMobile);
+let pixelRatio = gfx.pixelRatio;
 renderer.setPixelRatio(pixelRatio);
-renderer.shadowMap.enabled = !isMobile;
+renderer.shadowMap.enabled = gfx.shadows;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
@@ -99,7 +104,7 @@ const savedMap = (() => {
   }
 })();
 useMap(isMapId(savedMap) ? savedMap : 'cerro');
-const quality = { shadows: !isMobile, mobile: isMobile };
+let quality = { shadows: gfx.shadows, mobile: isMobile, density: gfx.density };
 let world = createWorld(scene, quality, activeMap());
 /** Tramos de cable del mapa (física de los cables del tendido). */
 let cables = cableSegments(activeMap(), groundHeight);
@@ -115,6 +120,9 @@ rotateEl.addEventListener('pointerdown', () => {
 
 // --- Sesión, entrada e interfaz ---
 const session = new Session();
+const telemetry = new Telemetry(() => session.token);
+telemetry.track('session_start', { mobile: isMobile, map: activeMap().id });
+session.onBuy = (item) => telemetry.track('buy', { item });
 const input = new Input(canvas, document.getElementById('touch')!);
 const hud = new Hud(document.getElementById('hud')!);
 hud.setTouch(input.isTouch);
@@ -217,19 +225,25 @@ const myBag = () => bagOf(session.data.gear.bag);
 const myPole = () => poleOf(session.data.gear.pole);
 let bagFullToast = 0;
 
+/**
+ * En una sala online con cuenta, los cortes, críticos, colas y entregas los acredita el servidor (lo que vio él):
+ * el cliente no los suma, para que no se cuenten dos veces ni se puedan inventar.
+ */
+const serverCredits = () => mode === 'online' && !session.isGuest;
+
 /** Llegaste a tu casa con la mochila cargada: se cobran y van al álbum. */
 function deliver(items: CarryItem[]) {
   bag.length = 0;
   if (!items.length) return;
   const pole = myPole();
   let coins = 0;
-  for (const it of items) {
-    const value = captureValue(it.kite, pole);
-    coins += value;
-    session.capture(trophyOf(it));
+  for (const it of items) coins += captureValue(it.kite, pole);
+  if (!serverCredits()) {
+    for (const it of items) session.capture(trophyOf(it));
+    session.add('captureBonus', coins - REWARDS.capture * items.length);
+    session.add('bestDelivery', items.length);
   }
-  session.add('captureBonus', coins - REWARDS.capture * items.length);
-  session.add('bestDelivery', items.length);
+  telemetry.track('delivery', { n: items.length, coins });
   devLog('delivered', { n: items.length, coins });
   hud.announce(`¡ENTREGA! +${coins} 🪙`, 'combo', `${items.length} ${items.length === 1 ? 'volantín' : 'volantines'} al álbum`);
   audio.combo(Math.min(6, items.length + 1));
@@ -276,6 +290,7 @@ session.onChange = () => {
   menu.refresh();
 };
 session.onRewards = (r) => {
+  if (r.levelUp) telemetry.track('level_up', { level: r.levelUp });
   if (r.coins > 0) hud.toast(`+${r.coins} 🪙`, 2.5, 'gold');
   for (const a of r.achievements) hud.toast(`🏆 Logro: ${a.nombre} (+${a.monedas} 🪙)`, 5, 'gold');
   if (r.levelUp) hud.toast(`⭐ ¡Subiste a nivel ${r.levelUp}!`, 5, 'gold');
@@ -344,6 +359,7 @@ async function goOnline(room: string) {
   mode = 'online';
   // La sala manda el escenario (al entrar con código puede ser otro)
   switchMap(online.map);
+  telemetry.track('play', { mode: 'online', map: online.map, private: online.isPrivate });
   for (const b of bots) b.dispose();
   bots = [];
   fallen.clear();
@@ -357,6 +373,7 @@ async function goOnline(room: string) {
 /** Cambia de escenario: arma el mundo nuevo y (en modo solo) vuelve a empezar en el cerro del mapa. */
 function switchMap(id: MapId) {
   if (id === activeMap().id) return;
+  telemetry.track('map', { map: id });
   world.dispose();
   useMap(id);
   world = createWorld(scene, quality, activeMap());
@@ -373,6 +390,28 @@ function switchMap(id: MapId) {
     respawn(0, 0);
   }
 }
+/** Cambia la calidad o el tope de FPS: ajusta el render y rearma el paisaje con su nueva densidad. */
+function setGraphics(g: Graphics) {
+  const rebuild = g.quality !== graphics.quality;
+  graphics = g;
+  saveGraphics(g);
+  if (!rebuild) return;
+  gfx = preset(g.quality, isMobile);
+  quality = { shadows: gfx.shadows, mobile: isMobile, density: gfx.density };
+  lowQuality = false;
+  pixelRatio = gfx.pixelRatio;
+  renderer.setPixelRatio(pixelRatio);
+  renderer.shadowMap.enabled = gfx.shadows;
+  world.dispose();
+  world = createWorld(scene, quality, activeMap());
+  // Los materiales se recompilan con o sin sombras
+  scene.traverse((o) => {
+    const m = (o as THREE.Mesh).material;
+    if (m) for (const mat of Array.isArray(m) ? m : [m]) mat.needsUpdate = true;
+  });
+  resize();
+}
+
 /** Mapa elegido en el menú (para modo solo y para la próxima sala online). */
 let chosenMap: MapId = activeMap().id;
 
@@ -404,6 +443,7 @@ const menu = new Menu(
   },
   () => {
     input.enabled = true;
+    if (mode === 'solo') telemetry.track('play', { mode: 'solo', map: activeMap().id });
     goFullscreen();
     hud.toast(
       input.isTouch
@@ -431,6 +471,8 @@ const menu = new Menu(
       mode === 'online'
         ? { room: online.room, isPrivate: online.isPrivate, players: [...online.info.values()].map((p) => (p.bot ? `${p.name} (bot)` : p.name)) }
         : null,
+    graphics: () => graphics,
+    setGraphics,
     map: () => chosenMap,
     selectMap: (id) => {
       chosenMap = id;
@@ -513,7 +555,8 @@ function onCut(victimName: string, victimMe: boolean, cutterName: string | null,
     if (info.cable) {
       hud.announce('¡SE ENREDÓ EN LOS CABLES!', 'bad', 'El tendido eléctrico corta cualquier hilo');
     } else if (cutterName) {
-      session.add('cutBy');
+      if (!serverCredits()) session.add('cutBy');
+      telemetry.track('cut_by', { cable: false });
       hud.announce('¡TE CORTARON!', 'bad', cutterName);
       hud.toast('Corre a buscar volantines caídos o encumbra otro.', 4, 'bad');
     } else {
@@ -532,11 +575,14 @@ function onCut(victimName: string, victimMe: boolean, cutterName: string | null,
     }
     setTimeout(() => void session.flush(), 1000);
   } else if (cutterMe) {
-    session.add('cuts');
-    if (info.combo > 1) session.add('comboCuts');
-    session.add('bestCombo', info.combo);
-    if (info.upset) session.add('upsets');
-    if (info.bonus) session.add('bonusCuts');
+    if (!serverCredits()) {
+      session.add('cuts');
+      if (info.combo > 1) session.add('comboCuts');
+      session.add('bestCombo', info.combo);
+      if (info.upset) session.add('upsets');
+      if (info.bonus) session.add('bonusCuts');
+    }
+    telemetry.track('cut', { combo: info.combo, upset: info.upset, bonus: info.bonus });
     const sub = `a ${victimName}${info.upset ? ' · ¡contra la corriente!' : ''}${info.bonus ? ' · ✨ zona bonus' : ''}`;
     hud.announce(info.combo > 1 ? `¡${comboName(info.combo)}!` : '¡CORTASTE!', info.combo > 1 ? 'combo' : 'cut', sub);
     if (info.streak)
@@ -561,7 +607,8 @@ function onTailCut(byMe: boolean, victimMe: boolean, byName: string, victimName:
   sparks.burst(p, byMe || victimMe ? 16 : 8);
   hud.feed(`${who(byName, byMe)} ✂️ cola de ${who(victimName, victimMe)}`);
   if (byMe) {
-    session.add('tailCuts');
+    if (!serverCredits()) session.add('tailCuts');
+    telemetry.track('tail');
     hud.announce('¡COLA CORTADA!', 'crit', `a ${victimName}: ahora va a cabecear`);
     audio.tail();
     rig.shake(0.1);
@@ -576,7 +623,8 @@ function onCrit(byMe: boolean, victimMe: boolean, byName: string, kind: Maneuver
   devLog('crit', { byMe, victimMe, byName, kind });
   sparks.burst(p, byMe || victimMe ? 26 : 12);
   if (byMe) {
-    session.add('crits');
+    if (!serverCredits()) session.add('crits');
+    telemetry.track('crit', { kind });
     hud.announce('¡CRÍTICO!', 'crit', maneuverName(kind));
     audio.crit();
     rig.shake(0.15);
@@ -785,6 +833,9 @@ function handleNetEvents() {
     } else if (e.t === 'delivered') {
       if (e.by === online.myId) deliver(e.items);
       else hud.feed(`${escapeHtml(nameOf(e.by))} 🏠 entregó ${e.items.length} ${e.items.length === 1 ? 'volantín' : 'volantines'}`);
+    } else if (e.t === 'rewards') {
+      // Premios que acreditó el servidor a tu cuenta (cortes, críticos, entregas en la sala)
+      session.applyServer(e.player as unknown as Parameters<Session['applyServer']>[0], e.rewards as Parameters<Session['applyServer']>[1]);
     } else if (e.t === 'closed') {
       hud.toast(`${e.reason} Sigues jugando solo.`, 5, 'bad');
       goSolo();
@@ -802,6 +853,8 @@ const tmpV = new THREE.Vector3();
 
 function frame(now: number) {
   requestAnimationFrame(frame);
+  // Tope de FPS: se salta cuadros hasta que toque (con 1 ms de holgura)
+  if (graphics.fps && now - last < 1000 / graphics.fps - 1) return;
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
 
@@ -948,7 +1001,7 @@ function frame(now: number) {
   fpsFrames++;
   if (fpsTime > 3) {
     const fps = fpsFrames / fpsTime;
-    if (fps < 30 && !lowQuality && !menu.open && document.visibilityState === 'visible') {
+    if (graphics.quality === 'auto' && fps < 30 && !lowQuality && !menu.open && document.visibilityState === 'visible') {
       lowQuality = true;
       pixelRatio = 1;
       renderer.setPixelRatio(pixelRatio);

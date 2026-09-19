@@ -3,13 +3,24 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { isMapId, type ClientMsg, type ServerMsg } from '@volantines/shared';
 import { playerFromToken } from './auth';
 import { pool } from './db';
-import { loadPlayer } from './players';
-import { Lobby, type Room } from './room';
+import { creditServer, loadPlayer, publicPlayer, withPlayer } from './players';
+import { Lobby, type Room, type RoomServices } from './room';
+import { recordServerEvent } from './telemetry';
 
 const MAX_MSG = 8 * 1024;
 const MAX_MSGS_PER_SEC = 40;
 
-export const lobby = new Lobby();
+/** Base de datos y telemetría para las salas: acreditar premios que vio el servidor y registrar eventos. */
+const services: RoomServices = {
+  credit: (accountId, events, trophies) =>
+    withPlayer(accountId, async (p, db) => {
+      const rewards = await creditServer(p, db, events, trophies);
+      return { player: publicPlayer(p) as unknown as Record<string, unknown>, rewards };
+    }),
+  event: (kind, accountId, data) => recordServerEvent(kind, accountId, data),
+};
+
+export const lobby = new Lobby(services);
 
 const reply = (ws: WebSocket, msg: ServerMsg) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(msg));
 const cleanName = (n: unknown) => (typeof n === 'string' && /^[\p{L}\p{N} _-]{1,16}$/u.test(n.trim()) ? n.trim() : 'Invitado');
@@ -57,6 +68,7 @@ export function attachWebSockets(server: http.Server) {
           design: msg.design,
           gear: account?.gear ?? msg.gear,
           progress: account,
+          accountId: account?.id ?? null,
         });
         joining = false;
         return;

@@ -173,27 +173,12 @@ export async function buy(p: PlayerState, db: PoolClient, key: string) {
   await db.query('INSERT INTO inventory (player_id, item) VALUES ($1, $2) ON CONFLICT DO NOTHING', [p.id, key]);
 }
 
-/** Suma un reporte de juego (acotado por el tiempo real transcurrido) y guarda capturas nuevas. */
-export async function report(p: PlayerState, db: PoolClient, events: Partial<GameEvents>, captured: unknown) {
-  const elapsed = Math.min(600, Math.max(1, (Date.now() - p.lastReport.getTime()) / 1000));
-  const capturesBefore = p.stats.captures;
-  const result = applyEvents(p, events, elapsed);
-  // Solo se guardan tantos diseños capturados como capturas aceptó el reporte
-  const accepted = p.stats.captures - capturesBefore;
-  if (Array.isArray(captured) && accepted > 0) {
-    const fresh = captured
-      .slice(0, accepted)
-      .map((t) => sanitizeTrophy(t))
-      .filter((t): t is Trophy => !!t);
-    p.captured = [...fresh, ...p.captured].slice(0, MAX_TROPHIES);
-  }
-  await db.query('UPDATE players SET xp = $2, coins = $3, stats = $4, captured = $5, last_report = now() WHERE id = $1', [
-    p.id,
-    p.xp,
-    p.coins,
-    p.stats,
-    JSON.stringify(p.captured),
-  ]);
+/** Guarda progreso, trofeos y logros nuevos después de aplicar eventos. `touchReport` marca la hora del último reporte del cliente. */
+async function saveProgress(p: PlayerState, db: PoolClient, result: ReturnType<typeof applyEvents>, touchReport: boolean) {
+  await db.query(
+    `UPDATE players SET xp = $2, coins = $3, stats = $4, captured = $5${touchReport ? ', last_report = now()' : ''} WHERE id = $1`,
+    [p.id, p.xp, p.coins, p.stats, JSON.stringify(p.captured)],
+  );
   for (const a of result.unlocked) {
     await db.query('INSERT INTO achievements (player_id, achievement_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [p.id, a.id]);
   }
@@ -203,6 +188,36 @@ export async function report(p: PlayerState, db: PoolClient, events: Partial<Gam
     levelUp: result.levelUp,
     achievements: result.unlocked.map((a) => ({ id: a.id, nombre: a.nombre, monedas: a.monedas })),
   };
+}
+
+/** Guarda solo tantos trofeos como capturas se aceptaron. */
+function addTrophies(p: PlayerState, captured: unknown, accepted: number) {
+  if (!Array.isArray(captured) || accepted <= 0) return;
+  const fresh = captured
+    .slice(0, accepted)
+    .map((t) => sanitizeTrophy(t))
+    .filter((t): t is Trophy => !!t);
+  p.captured = [...fresh, ...p.captured].slice(0, MAX_TROPHIES);
+}
+
+/** Suma un reporte de juego del cliente (acotado por el tiempo real transcurrido) y guarda capturas nuevas. */
+export async function report(p: PlayerState, db: PoolClient, events: Partial<GameEvents>, captured: unknown) {
+  const elapsed = Math.min(600, Math.max(1, (Date.now() - p.lastReport.getTime()) / 1000));
+  const capturesBefore = p.stats.captures;
+  const result = applyEvents(p, events, elapsed);
+  addTrophies(p, captured, p.stats.captures - capturesBefore);
+  return saveProgress(p, db, result, true);
+}
+
+/**
+ * Premios que acredita el servidor por lo que vio en una sala online (cortes, críticos, colas, entregas).
+ * Es confiable: sin topes por tiempo y sin tocar la hora del último reporte del cliente.
+ */
+export async function creditServer(p: PlayerState, db: PoolClient, events: Partial<GameEvents>, trophies: Trophy[]) {
+  const capturesBefore = p.stats.captures;
+  const result = applyEvents(p, events, 3600);
+  addTrophies(p, trophies, p.stats.captures - capturesBefore);
+  return saveProgress(p, db, result, false);
 }
 
 export async function rename(p: PlayerState, db: PoolClient, name: string) {
