@@ -314,3 +314,55 @@ describe('sala online: el servidor acredita a las cuentas', () => {
     expect(events[0].data).toMatchObject({ name: 'Tramposo' });
   });
 });
+
+describe('sala online: voz', () => {
+  const offer = { sdp: { type: 'offer' as const, sdp: 'v=0' } };
+
+  it('solo en salas privadas: se avisa quién la activó y las señales van solo entre quienes la tienen', () => {
+    const { room, a, b, sb } = twoPlayers();
+    const sc = fakeSocket();
+    const c = room.join(sc.ws, profile('Coni'));
+
+    // Sin voz no se reenvía nada
+    room.relaySignal(a, b.id, offer);
+    expect(sb.msgs.some((m) => m.t === 'rtc')).toBe(false);
+
+    room.setVoice(a, true);
+    room.setVoice(b, true);
+    const info = sc.msgs.filter((m) => m.t === 'info').at(-1);
+    expect(info?.t === 'info' && info.info.filter((p) => p.voice).map((p) => p.id)).toEqual([a.id, b.id]);
+
+    room.relaySignal(a, b.id, offer);
+    expect(sb.msgs.filter((m) => m.t === 'rtc')).toEqual([{ t: 'rtc', from: a.id, d: offer }]);
+
+    // Coni no activó la voz: no recibe ni puede mandar señales
+    room.relaySignal(a, c.id, offer);
+    room.relaySignal(c, b.id, offer);
+    expect(sc.msgs.some((m) => m.t === 'rtc')).toBe(false);
+    expect(sb.msgs.filter((m) => m.t === 'rtc')).toHaveLength(1);
+  });
+
+  it('en una sala pública no se puede activar', () => {
+    const room = new Room('PUBLI', false, () => undefined);
+    rooms.push(room);
+    const sa = fakeSocket();
+    const sb = fakeSocket();
+    const a = room.join(sa.ws, profile('Ana'));
+    const b = room.join(sb.ws, profile('Beto'));
+    room.setVoice(a, true);
+    room.setVoice(b, true);
+    room.relaySignal(a, b.id, offer);
+    expect(sb.msgs.some((m) => m.t === 'rtc')).toBe(false);
+    expect(room.info().some((p) => p.voice)).toBe(false);
+  });
+
+  it('no reenvía señales mal formadas ni demasiado grandes', () => {
+    const { room, a, b, sb } = twoPlayers();
+    room.setVoice(a, true);
+    room.setVoice(b, true);
+    room.relaySignal(a, b.id, { hola: 1 });
+    room.relaySignal(a, b.id, { sdp: { type: 'offer', sdp: 'x'.repeat(7000) } });
+    room.relaySignal(a, b.id, { ice: { candidate: 5 } });
+    expect(sb.msgs.some((m) => m.t === 'rtc')).toBe(false);
+  });
+});

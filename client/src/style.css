@@ -904,6 +904,74 @@ body {
   color: #0039a6;
 }
 
+/* --- Voz en salas privadas --- */
+.voice-panel {
+  position: absolute;
+  top: 124px;
+  right: var(--sr);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 200px;
+  font-size: 13px;
+}
+
+.voice-panel button {
+  font: inherit;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  color: #fff;
+  background: #0039a6;
+}
+
+.voice-panel .voice-toggle.on {
+  background: rgba(12, 28, 48, 0.55);
+}
+
+.voice-panel .ptt-btn {
+  padding: 12px 10px;
+  font-weight: 700;
+  background: #1f7a3a;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.voice-panel .ptt-btn.talking {
+  background: #c62828;
+}
+
+.voice-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.voice-member span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-member.speaking span {
+  font-weight: 700;
+}
+
+.voice-panel .voice-member button {
+  background: none;
+  padding: 2px 4px;
+  font-size: 16px;
+}
+
+.voice-empty {
+  opacity: 0.75;
+  font-size: 12px;
+}
+
 /* --- Pantalla completa (táctil) --- */
 .fs-btn {
   position: absolute;
@@ -962,6 +1030,18 @@ body {
   .room-chip {
     top: calc(var(--st) + 44px);
     font-size: 11px;
+  }
+  .voice-panel {
+    top: calc(var(--st) + 74px);
+    width: 160px;
+    font-size: 11px;
+    gap: 4px;
+  }
+  .voice-panel button {
+    padding: 5px 8px;
+  }
+  .voice-panel .ptt-btn {
+    padding: 10px 8px;
   }
   .fs-btn {
     right: calc(var(--sr) + 120px);

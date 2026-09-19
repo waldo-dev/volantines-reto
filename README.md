@@ -71,6 +71,12 @@ Se eligen en el menú → Jugar (algunos se desbloquean por nivel). Cada uno tie
 **La Playa** (viento fuerte y parejo, también con zona de bono) y **Cerros de Valparaíso** (rachas y cables del tendido que enredan y cortan el hilo).
 En online, la partida rápida y la sala nueva usan el escenario elegido; al entrar con código se usa el de la sala. En desarrollo, `?mapa=playa` en la URL abre ese escenario.
 
+## Voz en salas privadas
+
+En una sala privada (con código) cada jugador puede **activar la voz** en el panel de la derecha y hablar **manteniendo apretado** el botón (o la tecla `V`). El audio va directo entre navegadores por WebRTC; el servidor solo reenvía las señales para que se encuentren, y solo entre jugadores de la misma sala privada que activaron la voz. Cada voz sale desde el personaje que habla: se oye más fuerte cerca, pero nunca se apaga del todo. Cada uno puede silenciar a otro con 🔈/🔇. En partidas rápidas (salas públicas) no hay voz.
+
+El micrófono necesita HTTPS (o `localhost`). Algunas redes (ciertas móviles o de empresas) no permiten la conexión directa: si alguien no logra conectarse, habría que agregar un servidor TURN (`coturn`) en la VPS.
+
 ## Datos y seguridad
 
 - **Telemetría:** el juego manda eventos (sesiones, modo, mapa, cortes, entregas, compras) a `POST /api/events`; se guardan en la tabla `events`. Las vistas `daily_players` y `retention` dan jugadores por día y retención a 1 y 7 días.

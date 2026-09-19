@@ -151,6 +151,11 @@ export class Input {
     return r;
   }
 
+  /** Tecla V apretada (hablar por la voz de la sala). */
+  get talkHeld() {
+    return this.keys.has('KeyV');
+  }
+
   consumeDebug(): boolean {
     const d = this.debugRequested;
     this.debugRequested = false;

@@ -44,6 +44,38 @@ export interface NetPlayerInfo {
   design: KiteDesign;
   gear: Gear;
   bot: boolean;
+  /** Tiene la voz activada (solo en salas privadas). */
+  voice?: 1;
+}
+
+/**
+ * Señales de WebRTC para la voz: el servidor solo las reenvía entre dos jugadores de la misma sala privada
+ * que tienen la voz activada. El audio viaja directo entre navegadores.
+ */
+export interface RtcSignal {
+  sdp?: { type: 'offer' | 'answer'; sdp: string };
+  ice?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null };
+}
+
+export const VOICE = {
+  /** Una señal más larga que esto no se reenvía. */
+  maxSignalChars: 6000,
+  /** Señales por segundo por conexión (aparte del límite general). */
+  maxSignalsPerSec: 60,
+};
+
+/** Revisa que una señal tenga la forma esperada y no sea más grande de la cuenta. */
+export function validSignal(d: unknown): d is RtcSignal {
+  if (!d || typeof d !== 'object') return false;
+  const s = d as RtcSignal;
+  const okSdp = s.sdp === undefined || ((s.sdp.type === 'offer' || s.sdp.type === 'answer') && typeof s.sdp.sdp === 'string');
+  const okIce =
+    s.ice === undefined ||
+    (typeof s.ice.candidate === 'string' &&
+      (s.ice.sdpMid == null || typeof s.ice.sdpMid === 'string') &&
+      (s.ice.sdpMLineIndex == null || typeof s.ice.sdpMLineIndex === 'number'));
+  if (!okSdp || !okIce || (!s.sdp && !s.ice)) return false;
+  return JSON.stringify(s).length <= VOICE.maxSignalChars;
 }
 
 export interface NetFallen {
@@ -67,6 +99,10 @@ export type ClientMsg =
   | { t: 'join'; room: string; name: string; look: Look; design: KiteDesign; gear: Gear; token?: string | null; map?: MapId }
   | { t: 'state'; s: NetState }
   | { t: 'broken' } // mi hilo se cortó solo (desgaste)
+  /** Activo o apago mi voz (solo salas privadas). */
+  | { t: 'voice'; on: boolean }
+  /** Señal de WebRTC para otro jugador de la sala. */
+  | { t: 'rtc'; to: string; d: RtcSignal }
   | { t: 'profile'; name: string; look: Look; design: KiteDesign; gear: Gear };
 
 export type ServerMsg =
@@ -86,6 +122,8 @@ export type ServerMsg =
   | { t: 'rewards'; player: Record<string, unknown>; rewards: unknown }
   | { t: 'fallen'; id: string; owner: string; ownerName: string; design: KiteDesign; kite: string; p: N3; h: number }
   | { t: 'captured'; fallen: string; by: string }
+  /** Señal de WebRTC de otro jugador (voz). */
+  | { t: 'rtc'; from: string; d: RtcSignal }
   | { t: 'error'; msg: string };
 
 const r2 = (x: number) => Math.round(x * 100) / 100;

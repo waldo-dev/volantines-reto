@@ -1,6 +1,6 @@
 import type http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { isMapId, type ClientMsg, type ServerMsg } from '@volantines/shared';
+import { isMapId, VOICE, type ClientMsg, type ServerMsg } from '@volantines/shared';
 import { playerFromToken } from './auth';
 import { pool } from './db';
 import { creditServer, loadPlayer, publicPlayer, withPlayer } from './players';
@@ -35,20 +35,25 @@ export function attachWebSockets(server: http.Server) {
     let joining = false;
     let count = 0;
     let windowStart = Date.now();
+    let signals = 0;
 
     ws.on('message', async (raw) => {
       // Límite de mensajes por segundo por conexión
       if (Date.now() - windowStart > 1000) {
         windowStart = Date.now();
         count = 0;
+        signals = 0;
       }
-      if (++count > MAX_MSGS_PER_SEC) return;
       let msg: ClientMsg;
       try {
         msg = JSON.parse(raw.toString());
       } catch {
         return;
       }
+      // Las señales de voz llegan en ráfagas al conectar con varios: tienen su propio límite
+      if (msg?.t === 'rtc') {
+        if (++signals > VOICE.maxSignalsPerSec) return;
+      } else if (++count > MAX_MSGS_PER_SEC) return;
 
       if (msg.t === 'join') {
         if (room || joining) return;
@@ -76,6 +81,8 @@ export function attachWebSockets(server: http.Server) {
       if (!room || !human) return;
       if (msg.t === 'state') room.setState(human, msg.s);
       else if (msg.t === 'broken') room.selfBroken(human);
+      else if (msg.t === 'voice') room.setVoice(human, msg.on === true);
+      else if (msg.t === 'rtc') room.relaySignal(human, String(msg.to ?? ''), msg.d);
       else if (msg.t === 'profile') room.updateProfile(human, { ...msg, name: human.progress ? human.name : cleanName(msg.name) });
     });
 

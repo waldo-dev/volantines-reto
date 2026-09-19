@@ -25,6 +25,15 @@ export interface HudData {
   onCable: boolean;
 }
 
+/** Panel de voz (solo en salas privadas). */
+export interface HudVoice {
+  active: boolean;
+  talking: boolean;
+  meSpeaking: boolean;
+  touch: boolean;
+  members: { id: string; name: string; connected: boolean; muted: boolean; speaking: boolean }[];
+}
+
 export type AnnounceKind = 'cut' | 'crit' | 'combo' | 'streak' | 'bad';
 
 export interface HudPlayer {
@@ -68,6 +77,11 @@ export class Hud {
       <div class="announce"></div>
       <div class="crit-hint" hidden>⚡ ¡AHORA! <span data-crit-keys></span></div>
       <div class="panel room-chip" hidden></div>
+      <div class="panel voice-panel" hidden>
+        <button class="voice-toggle">🎙️ Activar voz</button>
+        <button class="ptt-btn" hidden>🎙️ Mantén para hablar</button>
+        <div class="voice-list"></div>
+      </div>
       <div class="bottom-stack">
         <button class="panel launch-btn" hidden>🪁 Encumbrar</button>
         <div class="panel home-hint" hidden><span class="home-arrow">↑</span> 🏠 Tu casa a <b data-hdist>0</b> m · 🎒 <b data-hbag>0</b></div>
@@ -88,6 +102,57 @@ export class Hud {
     this.$('.launch-btn').addEventListener('click', () => this.onLaunch?.());
     this.$('.fs-btn').addEventListener('click', () => this.onFullscreen?.());
     this.$('.snd-btn').addEventListener('click', () => this.onSound?.());
+    this.$('.voice-toggle').addEventListener('click', () => this.onVoiceToggle?.());
+    // Apretar para hablar: mientras el dedo o el clic esté abajo
+    const ptt = this.$('.ptt-btn');
+    ptt.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      ptt.setPointerCapture(e.pointerId);
+      this.onTalk?.(true);
+    });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) ptt.addEventListener(ev, () => this.onTalk?.(false));
+    ptt.addEventListener('contextmenu', (e) => e.preventDefault());
+    this.$('.voice-list').addEventListener('click', (e) => {
+      const id = (e.target as HTMLElement).closest<HTMLElement>('[data-mute]')?.dataset.mute;
+      if (id) this.onVoiceMute?.(id);
+    });
+  }
+
+  onVoiceToggle: (() => void) | null = null;
+  onTalk: ((on: boolean) => void) | null = null;
+  onVoiceMute: ((id: string) => void) | null = null;
+
+  /** Muestra el panel de voz (null lo esconde: modo solo o sala pública). */
+  setVoice(v: HudVoice | null) {
+    const panel = this.$('.voice-panel');
+    panel.hidden = !v;
+    if (!v) return;
+    const toggle = this.$('.voice-toggle');
+    toggle.textContent = v.active ? '🎙️ Voz activada · apagar' : '🎙️ Activar voz';
+    toggle.classList.toggle('on', v.active);
+    const ptt = this.$('.ptt-btn');
+    ptt.hidden = !v.active;
+    ptt.classList.toggle('talking', v.talking);
+    ptt.textContent = v.talking ? (v.meSpeaking ? '🔴 Hablando…' : '🔴 Te escuchan') : v.touch ? '🎙️ Mantén para hablar' : '🎙️ Mantén V para hablar';
+    const list = this.$('.voice-list');
+    list.replaceChildren(
+      ...(!v.active
+        ? []
+        : v.members.length === 0
+          ? [Object.assign(document.createElement('div'), { className: 'voice-empty', textContent: 'Nadie más tiene la voz activada' })]
+          : v.members.map((m) => {
+              const row = document.createElement('div');
+              row.className = `voice-member${m.speaking ? ' speaking' : ''}`;
+              const name = document.createElement('span');
+              name.textContent = `${m.speaking ? '🔊' : m.connected ? '🟢' : '⏳'} ${m.name}`;
+              const btn = document.createElement('button');
+              btn.dataset.mute = m.id;
+              btn.title = m.muted ? 'Volver a escuchar' : 'Silenciar';
+              btn.textContent = m.muted ? '🔇' : '🔈';
+              row.append(name, btn);
+              return row;
+            })),
+    );
   }
 
   onSound: (() => void) | null = null;

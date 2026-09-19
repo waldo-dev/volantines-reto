@@ -1,4 +1,4 @@
-import type { ClientMsg, Gear, KiteDesign, Look, MapId, NetFallen, NetPlayerInfo, NetSnapPlayer, NetState, ServerMsg } from '@volantines/shared';
+import type { ClientMsg, RtcSignal, Gear, KiteDesign, Look, MapId, NetFallen, NetPlayerInfo, NetSnapPlayer, NetState, ServerMsg } from '@volantines/shared';
 
 /** Se dibuja a los demás un poco en el pasado para poder interpolar entre dos snapshots. */
 const INTERP_DELAY = 0.12;
@@ -43,6 +43,8 @@ export class Online {
   map: MapId = 'cerro';
   info = new Map<string, NetPlayerInfo>();
   readonly events: NetEvent[] = [];
+  /** Señales de voz: se atienden apenas llegan (aunque la pestaña esté en segundo plano). */
+  onSignal: ((from: string, d: RtcSignal) => void) | null = null;
   fallen: NetFallen[] = [];
   private ws: WebSocket | null = null;
   private snaps: Snap[] = [];
@@ -83,6 +85,9 @@ export class Online {
             this.setInfo(m.info);
             this.syncClock(m.time);
             resolve();
+            break;
+          case 'rtc':
+            this.onSignal?.(m.from, m.d);
             break;
           case 'error':
             clearTimeout(timer);

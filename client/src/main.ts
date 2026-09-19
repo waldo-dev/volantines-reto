@@ -54,6 +54,7 @@ import { FallenKites } from './game/fallen';
 import { createBots, updateBot } from './game/bots';
 import { Sparks } from './game/sparks';
 import { Online } from './net/online';
+import { Voice } from './net/voice';
 import { GameAudio } from './audio';
 import { HomeMarker } from './entities/homeMarker';
 import { Telemetry } from './telemetry';
@@ -197,6 +198,40 @@ const fallen = new FallenKites(scene);
 const sparks = new Sparks(scene);
 const audio = new GameAudio();
 hud.setSound(!audio.muted);
+
+// --- Voz (solo en salas privadas, para jugar entre conocidos) ---
+const voice = new Voice(online);
+/** El botón "mantén para hablar" está apretado. */
+let pttHeld = false;
+online.onSignal = (from, d) => void voice.handleSignal(from, d);
+function refreshVoice() {
+  if (mode !== 'online' || !online.connected || !online.isPrivate) return hud.setVoice(null);
+  hud.setVoice({
+    active: voice.active,
+    talking: voice.talking,
+    meSpeaking: voice.speaking.has(online.myId),
+    touch: input.isTouch,
+    members: voice.members().map((m) => ({ ...m, muted: voice.muted.has(m.id), speaking: voice.speaking.has(m.id) })),
+  });
+  // Quien habla lleva 🔊 en su letrero
+  for (const [id, r] of remotes) if (!r.isBot) r.tag.set(voice.speaking.has(id) ? `🔊 ${r.name}` : r.name);
+}
+voice.onChange = refreshVoice;
+hud.onVoiceToggle = async () => {
+  if (voice.active) return voice.disable();
+  try {
+    await voice.enable();
+    hud.toast(input.isTouch ? 'Voz activada: mantén el botón para hablar' : 'Voz activada: mantén V para hablar', 3);
+  } catch (err) {
+    hud.toast((err as Error).message, 5, 'bad');
+  }
+};
+hud.onTalk = (on) => {
+  pttHeld = on;
+};
+hud.onVoiceMute = (id) => voice.toggleMute(id);
+const camDir = new THREE.Vector3();
+
 hud.onSound = () => {
   audio.setMuted(!audio.muted);
   hud.setSound(!audio.muted);
@@ -349,11 +384,16 @@ function syncRemotes(info: Map<string, NetPlayerInfo>) {
     r.setLook(i.look);
   }
   flyers = [player, ...remotes.values()];
+  voice.sync(info);
+  refreshVoice();
   hud.setRoom(`${mapById(online.map).emoji} Sala ${online.room}${online.isPrivate ? ' (privada)' : ''} · ${[...info.values()].filter((p) => !p.bot).length} jugadores`);
 }
 
 /** Entra a una sala online: '' partida rápida, 'NUEVA' sala privada, o un código. */
 async function goOnline(room: string) {
+  // La voz es de una sala: al cambiar de sala se apaga
+  voice.disable(false);
+  pttHeld = false;
   const d = session.data;
   await online.connect(room, { name: d.name, look: d.look, design: d.design, gear: d.gear, token: session.token, map: chosenMap });
   mode = 'online';
@@ -417,7 +457,10 @@ let chosenMap: MapId = activeMap().id;
 
 /** Vuelve al modo solo con bots locales. */
 function goSolo() {
+  voice.disable(false);
+  pttHeld = false;
   online.close();
+  hud.setVoice(null);
   mode = 'solo';
   for (const r of remotes.values()) r.dispose();
   remotes.clear();
@@ -902,6 +945,11 @@ function frame(now: number) {
     if (sendTimer <= 0) {
       sendTimer = 1 / NET_RATE;
       online.send({ t: 'state', s: player.netState() });
+    }
+    if (voice.active) {
+      voice.setTalking(pttHeld || (input.talkHeld && !menu.open));
+      camera.getWorldDirection(camDir);
+      voice.update(player.pos, camDir, (id) => remotes.get(id)?.pos ?? null);
     }
   }
 

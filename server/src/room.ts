@@ -43,6 +43,7 @@ import {
   stepKite,
   updateBotBody,
   useMap,
+  validSignal,
   windAt,
   type BotBody,
   type BotBrain,
@@ -143,6 +144,8 @@ interface Human {
   suspicionAt: number;
   issues: Partial<Record<Issue, number>>;
   lastSuspectReport: number;
+  /** Voz activada (solo en salas privadas). */
+  voice: boolean;
   /** Premios que esperan ser acreditados a la cuenta. */
   credit: { events: Partial<GameEvents>; trophies: Trophy[]; timer: NodeJS.Timeout | null };
 }
@@ -307,6 +310,7 @@ export class Room {
       suspicionAt: 0,
       issues: {},
       lastSuspectReport: -Infinity,
+      voice: false,
       credit: { events: {}, trophies: [], timer: null },
     };
     this.humans.set(h.id, h);
@@ -328,6 +332,21 @@ export class Room {
     this.syncBots();
     this.broadcast({ t: 'info', info: this.info() });
     if (this.humans.size === 0) this.emptySince = Date.now();
+  }
+
+  /** Activa o apaga la voz de un jugador. Solo existe en salas privadas (para jugar entre conocidos). */
+  setVoice(h: Human, on: boolean) {
+    if (!this.isPrivate || h.voice === on) return;
+    h.voice = on;
+    this.broadcast({ t: 'info', info: this.info() });
+  }
+
+  /** Reenvía una señal de WebRTC entre dos jugadores de esta sala privada que tienen la voz activada. */
+  relaySignal(from: Human, to: string, d: unknown) {
+    if (!this.isPrivate || !from.voice || !validSignal(d)) return;
+    const target = this.humans.get(to);
+    if (!target || target === from || !target.voice) return;
+    this.send(target, { t: 'rtc', from: from.id, d });
   }
 
   updateProfile(h: Human, p: { name: string; look: Look; design: KiteDesign; gear: Gear }) {
@@ -490,7 +509,7 @@ export class Room {
 
   info(): NetPlayerInfo[] {
     return [
-      ...[...this.humans.values()].map((h) => ({ id: h.id, name: h.name, look: h.look, design: h.design, gear: h.gear, bot: false })),
+      ...[...this.humans.values()].map((h) => ({ id: h.id, name: h.name, look: h.look, design: h.design, gear: h.gear, bot: false, ...(h.voice ? { voice: 1 as const } : {}) })),
       ...this.bots.map((b) => ({ id: b.id, name: b.name, look: b.look, design: b.design, gear: b.gear, bot: true })),
     ];
   }
