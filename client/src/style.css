@@ -1261,6 +1261,46 @@ body {
   transition: opacity 0.15s;
 }
 
+/* Charchazo en el celular: mismo lugar que el tirón (el tirón es volando; golpear, a pie) */
+.hit-btn {
+  position: absolute;
+  right: calc(max(24px, env(safe-area-inset-right)) + 16px);
+  bottom: 146px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.05;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: rgba(150, 60, 200, 0.35);
+  opacity: 0.55;
+  transition: opacity 0.15s;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.hit-btn small {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.hit-btn.ready {
+  opacity: 1;
+  background: rgba(170, 60, 220, 0.8);
+  animation: tiron-pulse 0.35s infinite alternate;
+}
+
+.hit-btn.active {
+  filter: brightness(1.5);
+  transform: scale(0.93);
+}
+
 .tiron-btn.cooling {
   opacity: 0.4;
 }
@@ -1323,7 +1363,8 @@ body {
     top: 44%;
     font-size: 17px;
   }
-  .tiron-btn {
+  .tiron-btn,
+  .hit-btn {
     width: 60px;
     height: 60px;
     right: calc(var(--sr) + 14px);

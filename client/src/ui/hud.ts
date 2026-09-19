@@ -190,10 +190,10 @@ export class Hud {
   onFullscreen: (() => void) | null = null;
 
   /** Aviso de que tienes a alguien al alcance de un charchazo (null lo esconde). */
-  setHitHint(name: string | null, touch: boolean) {
+  setHitHint(name: string | null) {
     const el = this.$('.hit-hint');
     el.hidden = !name;
-    if (name) el.textContent = `👋 ${touch ? 'TIRAR' : 'Clic / Espacio'}: charchazo a ${name}`;
+    if (name) el.textContent = `👋 Clic / Espacio: charchazo a ${name}`;
   }
 
   /** Indicador de sala online (null en modo solo). */

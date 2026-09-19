@@ -736,7 +736,7 @@ function fixedStep(dt: number) {
   const inp = input.state;
 
   // A pie, apretar tirar es pegar un charchazo
-  const hitPressed = inp.tirar && !prevTirar;
+  const hitPressed = (inp.tirar && !prevTirar) || input.consumeHit();
   prevTirar = inp.tirar;
   if (hitPressed && input.enabled && !player.flying && time >= player.brawl.cooldownUntil && time >= player.brawl.stunUntil) {
     if (mode === 'online') {
@@ -1058,7 +1058,9 @@ function frame(now: number) {
   // Letreros: 💫 botado por un charchazo, 🔊 hablando por la voz
   for (const f of flyers) f.setTagIcon(time < f.brawl.stunUntil ? '💫' : voice.speaking.has(f.id) ? '🔊' : null);
   const target = input.enabled ? hitTarget() : null;
-  hud.setHitHint(target?.name ?? null, input.isTouch);
+  // En el celular manda el botón redondo GOLPEAR; el aviso de texto es solo para teclado
+  hud.setHitHint(input.isTouch ? null : (target?.name ?? null));
+  input.setHitState(input.enabled && !player.flying, !!target);
 
   for (const f of flyers) {
     f.render(dt, time, windFor(f.altitude));

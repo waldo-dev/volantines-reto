@@ -56,6 +56,8 @@ export class Input {
   private tironRequested = false;
   /** Botón táctil del tirón (para mostrar enfriamiento y el momento del crítico). */
   private tironBtn: HTMLElement | null = null;
+  private hitBtn: HTMLElement | null = null;
+  private hitRequested = false;
   private mouseDirX = 0;
   private zoomDelta = 0;
   /** Movimiento horizontal del mouse acumulado (px), para girar la cámara a pie. */
@@ -189,6 +191,21 @@ export class Input {
     b.classList.toggle('hot', hot && ready);
   }
 
+  /** Botón táctil GOLPEAR: se ve a pie y se enciende cuando hay alguien al alcance. */
+  setHitState(visible: boolean, ready: boolean) {
+    const b = this.hitBtn;
+    if (!b) return;
+    b.hidden = !visible;
+    b.classList.toggle('ready', ready);
+  }
+
+  /** Se apretó el botón GOLPEAR (una vez por toque). */
+  consumeHit(): boolean {
+    const h = this.hitRequested;
+    this.hitRequested = false;
+    return h;
+  }
+
   update(): InputState {
     const k = this.keys;
     const s = this.state;
@@ -196,6 +213,7 @@ export class Input {
       s.tirar = s.soltar = s.tiron = s.rapido = false;
       s.dirX = s.moveX = s.moveY = 0;
       this.tironRequested = false;
+      this.hitRequested = false;
       return s;
     }
     const kx = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
@@ -226,6 +244,7 @@ export class Input {
       <div class="release-btn">SOLTAR<small>2× rápido</small></div>
       <div class="pull-btn">TIRAR</div>
       <div class="tiron-btn" hidden>⚡<small>TIRÓN</small></div>
+      <div class="hit-btn" hidden>👋<small>GOLPEAR</small></div>
       <button class="touch-btn reset-btn">↺ Reiniciar</button>
     `;
     const $ = <T extends HTMLElement>(sel: string) => root.querySelector(sel) as T;
@@ -236,6 +255,10 @@ export class Input {
     this.tironBtn = $('.tiron-btn');
     this.bindHold(this.tironBtn, (v) => {
       if (v) this.tironRequested = true;
+    });
+    this.hitBtn = $('.hit-btn');
+    this.bindHold(this.hitBtn, (v) => {
+      if (v) this.hitRequested = true;
     });
     $('.reset-btn').addEventListener('click', () => this.requestReset());
   }
