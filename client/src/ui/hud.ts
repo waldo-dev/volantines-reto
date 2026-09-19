@@ -76,6 +76,7 @@ export class Hud {
       <div class="feed"></div>
       <div class="announce"></div>
       <div class="crit-hint" hidden>⚡ ¡AHORA! <span data-crit-keys></span></div>
+      <div class="hit-hint" hidden></div>
       <div class="panel room-chip" hidden></div>
       <div class="panel voice-panel" hidden>
         <button class="voice-toggle">🎙️ Activar voz</button>
@@ -93,7 +94,8 @@ export class Hud {
         <kbd>W A S D</kbd> caminar · <kbd>Clic izq.</kbd>/<kbd>Espacio</kbd> tirar · <kbd>Clic der.</kbd>/<kbd>Shift</kbd> soltar ·
         <kbd>Mouse</kbd>/<kbd>Q E</kbd> dirigir · <kbd>Rueda</kbd> zoom · <kbd>R</kbd> encumbrar · <kbd>M</kbd> menú · <kbd>G</kbd> ajustes<br />
         <kbd>F</kbd>/<kbd>Clic medio</kbd> tirón seco · <kbd>Shift</kbd> ×2 (o <kbd>C</kbd>) largada: úsalos justo al cruzarte para un golpe crítico.<br />
-        Tira cuando la punta apunte hacia arriba. Recoge todo el hilo para guardar el volantín y salir a buscar los caídos.
+        Tira cuando la punta apunte hacia arriba. Recoge todo el hilo para guardar el volantín y salir a buscar los caídos.<br />
+        A pie, <kbd>Clic izq.</kbd>/<kbd>Espacio</kbd> junto a alguien: charchazo 👋 (si le pegas a quien te cortó, es venganza).
       </div>
     `;
     this.$ = (sel: string) => root.querySelector(sel) as HTMLElement;
@@ -186,6 +188,13 @@ export class Hud {
   }
 
   onFullscreen: (() => void) | null = null;
+
+  /** Aviso de que tienes a alguien al alcance de un charchazo (null lo esconde). */
+  setHitHint(name: string | null, touch: boolean) {
+    const el = this.$('.hit-hint');
+    el.hidden = !name;
+    if (name) el.textContent = `👋 ${touch ? 'TIRAR' : 'Clic / Espacio'}: charchazo a ${name}`;
+  }
 
   /** Indicador de sala online (null en modo solo). */
   setRoom(text: string | null) {

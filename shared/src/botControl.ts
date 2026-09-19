@@ -1,4 +1,5 @@
 import { botThink, createBrain, type BotBrain, type BotView } from './bot';
+import { BRAWL } from './brawl';
 import { CHARACTERS, COLOR_SWATCHES, HATS, PATTERNS, type Gear, type KiteDesign, type Look } from './cosmetics';
 import type { KiteInput, KiteState, Loadout } from './kite';
 import type { V3 } from './vec';
@@ -48,8 +49,10 @@ export interface BotBody {
   kite: KiteState | null;
   loadout: Loadout;
   brain: BotBrain | null;
-  botState: 'volar' | 'perseguir' | 'volver' | 'esperar';
+  botState: 'volar' | 'perseguir' | 'volver' | 'esperar' | 'vengar';
   botTimer: number;
+  /** A quién va a pegarle (estado 'vengar'). */
+  revengeOn?: string | null;
 }
 
 export interface BotControlContext {
@@ -62,17 +65,22 @@ export interface BotControlContext {
   nearestFallen: (p: V3) => { pos: V3; dist: number } | null;
   /** Saca un volantín nuevo a favor del viento. */
   launch: (bot: BotBody) => void;
+  /** Dónde está aquel al que el bot va a pegarle (null si ya no está o no se puede). */
+  revengeTarget?: (bot: BotBody) => V3 | null;
+  /** Intenta el charchazo; true si le pegó. */
+  tryHit?: (bot: BotBody) => boolean;
 }
 
 const WALK = 4.5;
+const RUN = 6;
 const IDLE: KiteInput = { tirar: false, soltar: false, dirX: 0 };
 
-function walkTo(bot: BotBody, target: V3) {
+function walkTo(bot: BotBody, target: V3, speed = WALK) {
   const dx = target.x - bot.pos.x;
   const dz = target.z - bot.pos.z;
   const d = Math.hypot(dx, dz);
   if (d < 0.5) return { x: 0, z: 0, dist: d };
-  const s = Math.min(WALK, d * 2);
+  const s = Math.min(speed, d * 2);
   return { x: (dx / d) * s, z: (dz / d) * s, dist: d };
 }
 
@@ -112,6 +120,22 @@ export function updateBotBody(bot: BotBody, ctx: BotControlContext): { input: Ki
       }
       const self: BotView = { id: bot.id, anchor: bot.anchor, kite: bot.kite, lo: bot.loadout };
       return { input: botThink(brain, self, ctx.rivals, windDir(ctx.wind), ctx.dt, ctx.rand), move: none };
+    }
+    case 'vengar': {
+      // Enojado: va a pegarle al que lo cortó; se aburre al rato y sigue buscando volantines
+      bot.botTimer -= ctx.dt;
+      const target = ctx.revengeTarget?.(bot) ?? null;
+      if (!target || bot.botTimer <= 0) {
+        bot.botState = 'perseguir';
+        bot.revengeOn = null;
+        return { input: IDLE, move: none };
+      }
+      const m = walkTo(bot, target, RUN);
+      if (m.dist < BRAWL.range * 0.8 && ctx.tryHit?.(bot)) {
+        bot.botState = 'perseguir';
+        bot.revengeOn = null;
+      }
+      return { input: IDLE, move: m.dist < BRAWL.range * 0.6 ? none : m };
     }
     case 'perseguir': {
       const near = ctx.nearestFallen(bot.pos);

@@ -24,6 +24,7 @@ export type NetEvent =
   | Extract<ServerMsg, { t: 'cut' }>
   | Extract<ServerMsg, { t: 'crit' }>
   | Extract<ServerMsg, { t: 'tail' }>
+  | Extract<ServerMsg, { t: 'hit' }>
   | Extract<ServerMsg, { t: 'delivered' }>
   | Extract<ServerMsg, { t: 'rewards' }>
   | { t: 'fallen'; id: string; owner: string; ownerName: string; design: KiteDesign; kite: string; p: [number, number, number]; h: number }

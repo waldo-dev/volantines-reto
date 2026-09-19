@@ -12,6 +12,7 @@ export const EVENT_KINDS = [
   'delivery', // { n, coins }
   'buy', // { item }
   'level_up', // { level }
+  'hit', // { revenge }
   'suspect', // (solo servidor) { reason, n }
 ] as const;
 

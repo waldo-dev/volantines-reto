@@ -1216,6 +1216,20 @@ body {
   white-space: nowrap;
 }
 
+.hit-hint {
+  position: absolute;
+  top: 58%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(12, 28, 48, 0.6);
+  color: #ffd84a;
+  font-size: 15px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .release-btn,
 .tiron-btn {
   flex-direction: column;

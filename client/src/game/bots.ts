@@ -27,12 +27,18 @@ export interface BotContext {
   fallen: FallenKites;
   contacts: Set<string>;
   rand: () => number;
+  /** Dónde está aquel al que el bot va a pegarle (null si no se puede). */
+  revengeTarget?: (bot: Flyer) => V3 | null;
+  /** Intenta el charchazo; true si le pegó. */
+  tryHit?: (bot: Flyer) => boolean;
 }
 
 /** Decide qué hace un bot este paso (la lógica vive en shared y es la misma del servidor). */
 export function updateBot(bot: Flyer, ctx: BotContext): { input: KiteInput; move: { x: number; z: number } } {
   return updateBotBody(bot, {
     ...ctx,
+    revengeTarget: ctx.revengeTarget ? () => ctx.revengeTarget!(bot) : undefined,
+    tryHit: ctx.tryHit ? () => ctx.tryHit!(bot) : undefined,
     nearestFallen: (p) => {
       const n = ctx.fallen.nearest(p);
       return n ? { pos: n.fallen.kite.pos, dist: n.dist } : null;

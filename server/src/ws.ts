@@ -81,6 +81,7 @@ export function attachWebSockets(server: http.Server) {
       if (!room || !human) return;
       if (msg.t === 'state') room.setState(human, msg.s);
       else if (msg.t === 'broken') room.selfBroken(human);
+      else if (msg.t === 'hit') room.hit(human);
       else if (msg.t === 'voice') room.setVoice(human, msg.on === true);
       else if (msg.t === 'rtc') room.relaySignal(human, String(msg.to ?? ''), msg.d);
       else if (msg.t === 'profile') room.updateProfile(human, { ...msg, name: human.progress ? human.name : cleanName(msg.name) });

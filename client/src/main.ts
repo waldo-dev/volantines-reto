@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import {
+  BRAWL,
   COMBO,
+  RevengeBook,
+  brawlTarget,
+  knockDir,
   CUT,
   DELIVERY_RADIUS,
   DROP_LOCK,
@@ -213,8 +217,6 @@ function refreshVoice() {
     touch: input.isTouch,
     members: voice.members().map((m) => ({ ...m, muted: voice.muted.has(m.id), speaking: voice.speaking.has(m.id) })),
   });
-  // Quien habla lleva 🔊 en su letrero
-  for (const [id, r] of remotes) if (!r.isBot) r.tag.set(voice.speaking.has(id) ? `🔊 ${r.name}` : r.name);
 }
 voice.onChange = refreshVoice;
 hud.onVoiceToggle = async () => {
@@ -607,15 +609,7 @@ function onCut(victimName: string, victimMe: boolean, cutterName: string | null,
     }
     resetCombo(comboOf(player.id));
     audio.cutBy();
-    // Con la mochila cargada se te cae un volantín (online lo deja caer el servidor)
-    const lost = bag.pop();
-    if (lost) {
-      hud.toast(`🎒 Se te cayó el volantín de ${lost.ownerName} de la mochila`, 4, 'bad');
-      if (mode === 'solo') {
-        const def = KITES.find((k) => k.id === lost.kite) ?? KITES[1];
-        fallen.addDropped(lost, def, { ...player.loadout, kite: def }, player.pos, player.id, time + DROP_LOCK);
-      }
-    }
+    loseFromBag();
     setTimeout(() => void session.flush(), 1000);
   } else if (cutterMe) {
     if (!serverCredits()) {
@@ -642,6 +636,64 @@ function onCut(victimName: string, victimMe: boolean, cutterName: string | null,
   } else {
     audio.cutFar();
   }
+}
+
+/** Con la mochila cargada se te cae un volantín donde estás (online lo deja caer el servidor). */
+function loseFromBag() {
+  const lost = bag.pop();
+  if (!lost) return;
+  hud.toast(`🎒 Se te cayó el volantín de ${lost.ownerName} de la mochila`, 4, 'bad');
+  if (mode === 'solo') {
+    const def = KITES.find((k) => k.id === lost.kite) ?? KITES[1];
+    fallen.addDropped(lost, def, { ...player.loadout, kite: def }, player.pos, player.id, time + DROP_LOCK);
+  }
+}
+
+// --- Charchazos ---
+/** Quién cortó a quién (modo solo), para saber si un charchazo es venganza. Online lo decide el servidor. */
+const revenge = new RevengeBook();
+/** Botón de tirar apretado el paso anterior (a pie, apretarlo es pegar). */
+let prevTirar = false;
+
+/** Un charchazo (en solo, o avisado por el servidor): animaciones, empujón, anuncios y mochila. */
+function onHit(att: Flyer, vic: Flyer, d: { x: number; z: number }, isRevenge: boolean) {
+  devLog('hit', { by: att.name, victim: vic.name, revenge: isRevenge });
+  att.facing = Math.atan2(vic.pos.x - att.pos.x, vic.pos.z - att.pos.z);
+  att.character.playOnce('attack-melee-right');
+  att.brawl.cooldownUntil = time + BRAWL.cooldown;
+  vic.character.knockdown(BRAWL.stun);
+  vic.brawl.stunUntil = time + BRAWL.stun;
+  vic.brawl.guardUntil = time + BRAWL.stun + BRAWL.guard;
+  vic.knock = { x: d.x * BRAWL.knockSpeed, z: d.z * BRAWL.knockSpeed, until: time + BRAWL.knockTime };
+  sparks.burst({ x: vic.pos.x, y: vic.pos.y + 1.4, z: vic.pos.z }, att === player || vic === player ? 12 : 6);
+  const near = Math.hypot(player.pos.x - vic.pos.x, player.pos.z - vic.pos.z) < 40;
+  if (att === player || vic === player || near) audio.slap();
+  hud.feed(`${who(att.name, att === player)} 👋 ${who(vic.name, vic === player)}${isRevenge ? '<span class="tag">VENGANZA</span>' : ''}`);
+  if (att === player) {
+    telemetry.track('hit', { revenge: isRevenge });
+    hud.announce(isRevenge ? '¡VENGANZA!' : '¡CHARCHAZO!', isRevenge ? 'streak' : 'crit', `a ${vic.name}`);
+    rig.shake(0.15);
+  } else if (vic === player) {
+    hud.announce('¡TE BOTARON!', 'bad', isRevenge ? `${att.name} se vengó` : `charchazo de ${att.name}`);
+    rig.shake(0.3);
+    loseFromBag();
+  }
+}
+
+/** Intenta un charchazo de un bot enojado a quien persigue (modo solo). */
+function botTryHit(bot: Flyer): boolean {
+  const target = flyers.find((f) => f.id === bot.revengeOn);
+  if (!target || time < bot.brawl.cooldownUntil || time < target.brawl.guardUntil) return false;
+  bot.facing = Math.atan2(target.pos.x - bot.pos.x, target.pos.z - bot.pos.z);
+  if (!brawlTarget(bot, [target], () => true)) return false;
+  onHit(bot, target, knockDir(bot.pos, target.pos), revenge.take(bot.id, target.id, time));
+  return true;
+}
+
+/** A quién le llegaría tu charchazo ahora (a pie, fuera de la espera y sin estar botado). */
+function hitTarget(): Flyer | null {
+  if (player.flying || time < player.brawl.cooldownUntil || time < player.brawl.stunUntil) return null;
+  return brawlTarget(player, flyers, (f) => time >= f.brawl.guardUntil);
 }
 
 /** Le cortaron la cola a alguien: sin cola el volantín cabecea. */
@@ -683,15 +735,43 @@ function fixedStep(dt: number) {
   stepCount++;
   const inp = input.state;
 
+  // A pie, apretar tirar es pegar un charchazo
+  const hitPressed = inp.tirar && !prevTirar;
+  prevTirar = inp.tirar;
+  if (hitPressed && input.enabled && !player.flying && time >= player.brawl.cooldownUntil && time >= player.brawl.stunUntil) {
+    if (mode === 'online') {
+      // El servidor decide a quién le llega; aquí solo el gesto (y una espera corta para no mandar de más)
+      online.send({ t: 'hit' });
+      player.character.playOnce('attack-melee-right');
+      player.brawl.cooldownUntil = time + 0.4;
+    } else {
+      const target = brawlTarget(player, flyers, (f) => time >= f.brawl.guardUntil);
+      if (target) onHit(player, target, knockDir(player.pos, target.pos), revenge.take(player.id, target.id, time));
+      else {
+        player.character.playOnce('attack-melee-right');
+        player.brawl.cooldownUntil = time + 0.4;
+      }
+    }
+  }
+
   // Tú: con volantín caminas; libre, corres. Adelante es hacia donde mira la cámara.
+  const stunned = time < player.brawl.stunUntil;
   const speed = player.flying ? WALK_WITH_KITE : RUN_FREE;
   const mlen = Math.hypot(inp.moveX, inp.moveY);
   const k = mlen > 1 ? 1 / mlen : 1;
   let vx = (rig.forward.x * inp.moveY + rig.right.x * inp.moveX) * k * speed;
   let vz = (rig.forward.z * inp.moveY + rig.right.z * inp.moveX) * k * speed;
+  // Botado: no te mueves ni manejas el volantín; solo te arrastra el empujón
+  if (stunned) {
+    vx = time < player.knock.until ? player.knock.x : 0;
+    vz = time < player.knock.until ? player.knock.z : 0;
+  }
   // No se camina dentro del mar ni de la laguna
   if (!walkable(player.pos.x + vx * dt * 8, player.pos.z + vz * dt * 8)) vx = vz = 0;
-  player.step(dt, player.flying ? inp : NO_KITE, vx, vz, windFor(player.altitude));
+  const facing = player.facing;
+  player.step(dt, player.flying && !stunned ? inp : NO_KITE, vx, vz, windFor(player.altitude));
+  // El empujón no te da vuelta
+  if (stunned) player.facing = facing;
   if (inp.tiron) input.consumeTiron();
   const pk = player.kite;
   if (pk && player.flying && pk.maneuverAge === 0) {
@@ -715,6 +795,14 @@ function fixedStep(dt: number) {
   const views: BotView[] = flyers.filter((f) => f.flying).map((f) => ({ id: f.id, anchor: f.anchor, kite: f.kite!, lo: f.loadout }));
   const windNow = windFor(10);
   for (const bot of bots) {
+    // Botado por un charchazo: no hace nada, solo lo arrastra el empujón
+    if (time < bot.brawl.stunUntil) {
+      const kn = time < bot.knock.until;
+      const f = bot.facing;
+      bot.step(dt, NO_KITE, kn ? bot.knock.x : 0, kn ? bot.knock.z : 0, windFor(bot.altitude));
+      bot.facing = f;
+      continue;
+    }
     const { input: bi, move } = updateBot(bot, {
       dt,
       wind: windNow,
@@ -722,6 +810,8 @@ function fixedStep(dt: number) {
       fallen,
       contacts: contactsNow,
       rand,
+      revengeTarget: (b) => (b.revengeOn === player.id ? player.pos : null),
+      tryHit: botTryHit,
     });
     bot.step(dt, bi, move.x, move.z, windFor(bot.altitude));
   }
@@ -770,6 +860,13 @@ function fixedStep(dt: number) {
     resetCombo(comboOf(f.id));
     const info: CutInfo = { combo: 0, upset: false, streak: false, bonus: false, cable: byCross && f.lastDamager === 'cable' };
     if (cutter) {
+      revenge.cut(f.id, cutter.id, time);
+      // A veces el bot que cortaste va enojado a pegarte
+      if (f.isBot && cutter === player && rand() < BRAWL.botRevengeChance) {
+        f.botState = 'vengar';
+        f.revengeOn = player.id;
+        f.botTimer = BRAWL.botRevengeTime;
+      }
       const r = registerCut(comboOf(cutter.id), time);
       info.combo = r.combo;
       info.streak = r.streakStarted;
@@ -879,6 +976,10 @@ function handleNetEvents() {
     } else if (e.t === 'rewards') {
       // Premios que acreditó el servidor a tu cuenta (cortes, críticos, entregas en la sala)
       session.applyServer(e.player as unknown as Parameters<Session['applyServer']>[0], e.rewards as Parameters<Session['applyServer']>[1]);
+    } else if (e.t === 'hit') {
+      const att = e.by === online.myId ? player : remotes.get(e.by);
+      const vic = e.victim === online.myId ? player : remotes.get(e.victim);
+      if (att && vic) onHit(att, vic, { x: e.d[0], z: e.d[1] }, !!e.revenge);
     } else if (e.t === 'closed') {
       hud.toast(`${e.reason} Sigues jugando solo.`, 5, 'bad');
       goSolo();
@@ -954,6 +1055,11 @@ function frame(now: number) {
   }
 
   const wind = windFor(player.altitude);
+  // Letreros: 💫 botado por un charchazo, 🔊 hablando por la voz
+  for (const f of flyers) f.setTagIcon(time < f.brawl.stunUntil ? '💫' : voice.speaking.has(f.id) ? '🔊' : null);
+  const target = input.enabled ? hitTarget() : null;
+  hud.setHitHint(target?.name ?? null, input.isTouch);
+
   for (const f of flyers) {
     f.render(dt, time, windFor(f.altitude));
     // En racha el volantín va soltando chispas

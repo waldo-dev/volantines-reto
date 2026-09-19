@@ -71,6 +71,16 @@ Se eligen en el menú → Jugar (algunos se desbloquean por nivel). Cada uno tie
 **La Playa** (viento fuerte y parejo, también con zona de bono) y **Cerros de Valparaíso** (rachas y cables del tendido que enredan y cortan el hilo).
 En online, la partida rápida y la sala nueva usan el escenario elegido; al entrar con código se usa el de la sala. En desarrollo, `?mapa=playa` en la URL abre ese escenario.
 
+## Charchazos
+
+A pie (con el volantín guardado o después de que te cortan), el botón de **tirar** (clic, Espacio o TIRAR en el celular) es un **charchazo** al que tengas al frente y a menos de 1,9 m. Cuando hay alguien al alcance aparece el aviso "👋 charchazo a …".
+
+- El que lo recibe queda **botado 1,2 s** (💫): no se mueve ni maneja su volantín, y el empujón lo corre un par de metros. **Si lleva volantines en la mochila, se le cae uno.**
+- Pegarle a quien te cortó en los últimos 45 s es **¡VENGANZA!** (una vez por corte).
+- Hay 2,5 s de espera entre golpes, y el que recibió uno queda protegido 2,5 s más, para que nadie deje a otro pegado en el suelo.
+- A veces un bot que cortaste va **enojado a pegarte** (50 %).
+- Online lo decide el servidor: revisa que estés a pie, cerca, de frente y fuera de la espera. Los valores están en `BRAWL` (`shared/src/brawl.ts`).
+
 ## Voz en salas privadas
 
 En una sala privada (con código) cada jugador puede **activar la voz** en el panel de la derecha y hablar **manteniendo apretado** el botón (o la tecla `V`). El audio va directo entre navegadores por WebRTC; el servidor solo reenvía las señales para que se encuentren, y solo entre jugadores de la misma sala privada que activaron la voz. Cada voz sale desde el personaje que habla: se oye más fuerte cerca, pero nunca se apaga del todo. Cada uno puede silenciar a otro con 🔈/🔇. En partidas rápidas (salas públicas) no hay voz.

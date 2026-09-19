@@ -9,6 +9,7 @@ export * from './bot';
 export * from './progression';
 export * from './cosmetics';
 export * from './protocol';
+export * from './brawl';
 export * from './botControl';
 export * from './combo';
 export * from './collect';

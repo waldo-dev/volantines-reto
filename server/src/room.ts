@@ -43,6 +43,10 @@ import {
   stepKite,
   updateBotBody,
   useMap,
+  BRAWL,
+  RevengeBook,
+  brawlTarget,
+  knockDir,
   validSignal,
   windAt,
   type BotBody,
@@ -146,6 +150,8 @@ interface Human {
   lastSuspectReport: number;
   /** Voz activada (solo en salas privadas). */
   voice: boolean;
+  /** Charchazos (hora de la sala, s): cuándo puede volver a pegar, hasta cuándo está botado y protegido. */
+  brawl: { cooldownUntil: number; stunUntil: number; guardUntil: number };
   /** Premios que esperan ser acreditados a la cuenta. */
   credit: { events: Partial<GameEvents>; trophies: Trophy[]; timer: NodeJS.Timeout | null };
 }
@@ -162,6 +168,10 @@ class Bot implements BotBody {
   botTimer = 1 + Math.random() * 3;
   rope = new Rope(16);
   facing = 0;
+  revengeOn: string | null = null;
+  brawl = { cooldownUntil: 0, stunUntil: 0, guardUntil: 0 };
+  /** Empujón de un charchazo: velocidad y hasta cuándo dura. */
+  knock = { x: 0, z: 0, until: 0 };
   fid = 0;
   name: string;
   look: Look;
@@ -251,6 +261,7 @@ export class Room {
   private combos = new Map<string, ComboState>();
   private contacts = new Set<string>();
   private crossingOf = new Map<string, string>();
+  private revenge = new RevengeBook();
   time = 0;
   private timer: NodeJS.Timeout;
   private emptySince = Date.now();
@@ -311,6 +322,7 @@ export class Room {
       issues: {},
       lastSuspectReport: -Infinity,
       voice: false,
+      brawl: { cooldownUntil: 0, stunUntil: 0, guardUntil: 0 },
       credit: { events: {}, trophies: [], timer: null },
     };
     this.humans.set(h.id, h);
@@ -329,6 +341,7 @@ export class Room {
     }
     this.humans.delete(h.id);
     this.combos.delete(h.id);
+    this.revenge.forget(h.id);
     this.syncBots();
     this.broadcast({ t: 'info', info: this.info() });
     if (this.humans.size === 0) this.emptySince = Date.now();
@@ -347,6 +360,50 @@ export class Room {
     const target = this.humans.get(to);
     if (!target || target === from || !target.voice) return;
     this.send(target, { t: 'rtc', from: from.id, d });
+  }
+
+  /** Charchazo de una persona: solo a pie, sin estar botado y respetando la espera entre golpes. */
+  hit(h: Human) {
+    const s = h.state;
+    if (!s || (s.k && s.k.s !== 1)) return;
+    if (this.time < h.brawl.cooldownUntil || this.time < h.brawl.stunUntil) return;
+    const pos: V3 = { x: s.p[0], y: s.p[1], z: s.p[2] };
+    const target = brawlTarget({ id: h.id, pos, facing: s.f }, this.brawlers(), (o) => this.time >= o.brawl.guardUntil);
+    if (target) this.landHit(h.id, pos, target);
+  }
+
+  /** Todos los que pueden recibir un charchazo, con su posición. */
+  private brawlers() {
+    const out: { id: string; pos: V3; brawl: Human['brawl']; human: Human | null; bot: Bot | null }[] = [];
+    for (const h of this.humans.values()) if (h.state) out.push({ id: h.id, pos: { x: h.state.p[0], y: h.state.p[1], z: h.state.p[2] }, brawl: h.brawl, human: h, bot: null });
+    for (const b of this.bots) out.push({ id: b.id, pos: b.pos, brawl: b.brawl, human: null, bot: b });
+    return out;
+  }
+
+  /** Aplica un charchazo: bota al que lo recibe, se le cae un volantín de la mochila y se avisa a todos. */
+  private landHit(by: string, from: V3, target: ReturnType<Room['brawlers']>[number]) {
+    const d = knockDir(from, target.pos);
+    const revenge = this.revenge.take(by, target.id, this.time);
+    const attacker = this.humans.get(by)?.brawl ?? this.bots.find((b) => b.id === by)?.brawl;
+    if (attacker) attacker.cooldownUntil = this.time + BRAWL.cooldown;
+    target.brawl.stunUntil = this.time + BRAWL.stun;
+    target.brawl.guardUntil = this.time + BRAWL.stun + BRAWL.guard;
+    if (target.bot) target.bot.knock = { x: d.x * BRAWL.knockSpeed, z: d.z * BRAWL.knockSpeed, until: this.time + BRAWL.knockTime };
+    if (target.human) this.dropCarried(target.human);
+    this.broadcast({ t: 'hit', by, victim: target.id, d: [Math.round(d.x * 100) / 100, Math.round(d.z * 100) / 100], ...(revenge ? { revenge: 1 as const } : {}) });
+    const h = this.humans.get(by);
+    if (h) this.services?.event('hit', h.accountId, { revenge, victimBot: !!target.bot });
+  }
+
+  /** Un bot enojado le pega a quien persigue si lo tiene al alcance. */
+  private botHit(b: Bot): boolean {
+    if (this.time < b.brawl.cooldownUntil || !b.revengeOn) return false;
+    const t = this.brawlers().find((o) => o.id === b.revengeOn);
+    if (!t || this.time < t.brawl.guardUntil) return false;
+    b.facing = Math.atan2(t.pos.x - b.pos.x, t.pos.z - b.pos.z);
+    if (!brawlTarget({ id: b.id, pos: b.pos, facing: b.facing }, [t], () => true)) return false;
+    this.landHit(b.id, b.pos, t);
+    return true;
   }
 
   updateProfile(h: Human, p: { name: string; look: Look; design: KiteDesign; gear: Gear }) {
@@ -472,6 +529,14 @@ export class Room {
       this.broadcast({ t: 'cut', victim, cutter: null, ...(this.cableHits.has(victim) ? { cable: 1 as const } : {}) });
       return;
     }
+    this.revenge.cut(victim, cutter, this.time);
+    // A veces el bot cortado por una persona va enojado a pegarle
+    const vb = this.bots.find((b) => b.id === victim);
+    if (vb && this.humans.has(cutter) && Math.random() < BRAWL.botRevengeChance) {
+      vb.botState = 'vengar';
+      vb.revengeOn = cutter;
+      vb.botTimer = BRAWL.botRevengeTime;
+    }
     const cutterKite = this.humans.get(cutter)?.scratchKite ?? this.bots.find((b) => b.id === cutter)?.kite;
     const bonus = !!cutterKite && inBonus(mapById(this.map), cutterKite.pos);
     const ch = this.humans.get(cutter);
@@ -568,21 +633,31 @@ export class Room {
       this.time += dt;
       const wind = windAt(this.time, 10);
       for (const b of this.bots) {
-        const { input, move } = updateBotBody(b, {
-          dt,
-          wind,
-          rivals: views.filter((v) => v.id !== b.id),
-          contacts: this.contacts,
-          rand: Math.random,
-          nearestFallen: (p) => this.nearestFallen(p),
-          launch: () => b.launch(wind),
-        });
+        // Botado por un charchazo: no hace nada, solo lo arrastra el empujón
+        const stunned = this.time < b.brawl.stunUntil;
+        const knock = this.time < b.knock.until ? b.knock : { x: 0, z: 0 };
+        const { input, move } = stunned
+          ? { input: NO_INPUT, move: knock }
+          : updateBotBody(b, {
+              dt,
+              wind,
+              rivals: views.filter((v) => v.id !== b.id),
+              contacts: this.contacts,
+              rand: Math.random,
+              nearestFallen: (p) => this.nearestFallen(p),
+              launch: () => b.launch(wind),
+              revengeTarget: () => {
+                const h = b.revengeOn ? this.humans.get(b.revengeOn) : null;
+                return h?.state ? { x: h.state.p[0], y: h.state.p[1], z: h.state.p[2] } : null;
+              },
+              tryHit: () => this.botHit(b),
+            });
         b.vel.x = move.x;
         b.vel.z = move.z;
         b.pos.x += move.x * dt;
         b.pos.z += move.z * dt;
         b.pos.y = groundHeight(b.pos.x, b.pos.z);
-        if (Math.hypot(move.x, move.z) > 0.2) b.facing = Math.atan2(move.x, move.z);
+        if (!stunned && Math.hypot(move.x, move.z) > 0.2) b.facing = Math.atan2(move.x, move.z);
         b.updateAnchor();
         const k = b.kite;
         if (!k) continue;

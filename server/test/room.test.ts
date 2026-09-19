@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_DESIGN, DEFAULT_GEAR, DEFAULT_LOOK, cableSegments, createKite, gearLoadout, groundHeight, mapById, tailSegment, useMap, type NetState, type ServerMsg } from '@volantines/shared';
+import { BRAWL, DEFAULT_DESIGN, DEFAULT_GEAR, DEFAULT_LOOK, cableSegments, createKite, gearLoadout, groundHeight, mapById, tailSegment, useMap, type NetState, type ServerMsg } from '@volantines/shared';
 import type { WebSocket } from 'ws';
 import { Lobby, Room } from '../src/room';
 
@@ -364,5 +364,60 @@ describe('sala online: voz', () => {
     room.relaySignal(a, b.id, { sdp: { type: 'offer', sdp: 'x'.repeat(7000) } });
     room.relaySignal(a, b.id, { ice: { candidate: 5 } });
     expect(sb.msgs.some((m) => m.t === 'rtc')).toBe(false);
+  });
+});
+
+describe('sala online: charchazos', () => {
+  const standing = (fid: number, x: number, z: number, f = 0): NetState => ({ p: [x, groundHeight(x, z), z], v: [0, 0], f, fid });
+  const advance = (room: Room, s: number) => ((room as unknown as { time: number }).time += s);
+  const hitsOf = (msgs: ServerMsg[]) => msgs.filter((m): m is Extract<ServerMsg, { t: 'hit' }> => m.t === 'hit');
+
+  function face2face() {
+    const { room, a, b, sa, sb } = twoPlayers();
+    // Ana mira hacia +z; Beto está 1,2 m al frente
+    room.setState(a, standing(1, 40, 0, 0));
+    room.setState(b, standing(1, 40, 1.2, Math.PI));
+    return { room, a, b, sa, sb };
+  }
+
+  it('a pie le pega al de al frente: se avisa a todos y se le cae un volantín de la mochila', () => {
+    const { room, a, b, sa, sb } = face2face();
+    b.bag.push({ design: DEFAULT_DESIGN, kite: 'mediano', owner: 'x', ownerName: 'Pancho' });
+    room.hit(a);
+    for (const msgs of [sa.msgs, sb.msgs]) expect(hitsOf(msgs)).toEqual([{ t: 'hit', by: a.id, victim: b.id, d: [0, 1] }]);
+    expect(b.bag).toHaveLength(0);
+    expect(sa.msgs.some((m) => m.t === 'fallen')).toBe(true);
+  });
+
+  it('con el volantín en el aire no se puede pegar', () => {
+    const { room, a, b, sb } = twoPlayers();
+    const y = groundHeight(40, 0);
+    room.setState(a, state(1, [40, y + 1.2, 0], [40, y + 30, 60]));
+    room.setState(b, standing(1, 40, 1.2));
+    room.hit(a);
+    expect(hitsOf(sb.msgs)).toHaveLength(0);
+  });
+
+  it('hay espera entre golpes y el que recibe queda protegido un rato', () => {
+    const { room, a, b, sb } = face2face();
+    room.hit(a);
+    room.hit(a); // en espera
+    expect(hitsOf(sb.msgs)).toHaveLength(1);
+    advance(room, BRAWL.cooldown + 0.1);
+    room.hit(a); // Beto sigue protegido
+    expect(hitsOf(sb.msgs)).toHaveLength(1);
+    advance(room, BRAWL.stun + BRAWL.guard);
+    room.hit(a);
+    expect(hitsOf(sb.msgs)).toHaveLength(2);
+  });
+
+  it('pegarle a quien te cortó hace poco es venganza (una vez)', () => {
+    const { room, a, b, sb } = face2face();
+    (room as unknown as { revenge: { cut(v: string, c: string, t: number): void } }).revenge.cut(a.id, b.id, 0);
+    room.hit(a);
+    expect(hitsOf(sb.msgs)[0].revenge).toBe(1);
+    advance(room, BRAWL.stun + BRAWL.guard + BRAWL.cooldown);
+    room.hit(a);
+    expect(hitsOf(sb.msgs)[1].revenge).toBeUndefined();
   });
 });

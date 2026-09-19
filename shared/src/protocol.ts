@@ -99,6 +99,8 @@ export type ClientMsg =
   | { t: 'join'; room: string; name: string; look: Look; design: KiteDesign; gear: Gear; token?: string | null; map?: MapId }
   | { t: 'state'; s: NetState }
   | { t: 'broken' } // mi hilo se cortó solo (desgaste)
+  /** Charchazo: el servidor elige a quién le llega (al frente y cerca). */
+  | { t: 'hit' }
   /** Activo o apago mi voz (solo salas privadas). */
   | { t: 'voice'; on: boolean }
   /** Señal de WebRTC para otro jugador de la sala. */
@@ -122,6 +124,8 @@ export type ServerMsg =
   | { t: 'rewards'; player: Record<string, unknown>; rewards: unknown }
   | { t: 'fallen'; id: string; owner: string; ownerName: string; design: KiteDesign; kite: string; p: N3; h: number }
   | { t: 'captured'; fallen: string; by: string }
+  /** Charchazo: `d` es la dirección del empujón; `revenge` si le pegó a quien lo cortó. */
+  | { t: 'hit'; by: string; victim: string; d: [number, number]; revenge?: 1 }
   /** Señal de WebRTC de otro jugador (voz). */
   | { t: 'rtc'; from: string; d: RtcSignal }
   | { t: 'error'; msg: string };

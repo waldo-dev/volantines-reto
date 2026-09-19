@@ -228,6 +228,12 @@ export class GameAudio {
     this.cheer(0.18, 0.6);
   }
 
+  /** Charchazo: palmada seca con un golpe grave abajo. */
+  slap() {
+    this.swish(3500, 1200, 0.07, 0.55, 1.5, 'bandpass');
+    this.tone(140, 0.18, 0.35, 'sine', 0, 60);
+  }
+
   capture() {
     this.tone(660, 0.12, 0.15, 'triangle');
     this.tone(990, 0.2, 0.15, 'triangle', 0.1);

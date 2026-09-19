@@ -63,7 +63,14 @@ export class Flyer {
   /** Datos de bot. */
   brain: BotBrain | null = null;
   home: V3;
-  botState: 'volar' | 'perseguir' | 'volver' | 'esperar' = 'esperar';
+  botState: 'volar' | 'perseguir' | 'volver' | 'esperar' | 'vengar' = 'esperar';
+  /** Bot enojado: a quién va a pegarle. */
+  revengeOn: string | null = null;
+  /** Charchazos (s de juego): cuándo puede volver a pegar, hasta cuándo está botado y protegido. */
+  brawl = { cooldownUntil: 0, stunUntil: 0, guardUntil: 0 };
+  /** Empujón de un charchazo: velocidad y hasta cuándo dura. */
+  knock = { x: 0, z: 0, until: 0 };
+  private tagColor: string | undefined;
   /** Número de volantín (sube con cada encumbre); en red distingue un volantín nuevo de uno cortado. */
   fid = 0;
   botTimer = 1 + Math.random() * 2;
@@ -85,6 +92,7 @@ export class Flyer {
     this.character = new Character(opts.shadows);
     void this.character.setLook(opts.look);
     scene.add(this.character.group);
+    this.tagColor = opts.tagColor;
     this.tag = new NameTag(opts.name, opts.tagColor);
     scene.add(this.tag.sprite);
     this.rope = new Rope(opts.ropePoints);
@@ -119,8 +127,20 @@ export class Flyer {
 
   setName(name: string, color?: string) {
     this.name = name;
-    this.tag.set(name, color);
+    if (color) this.tagColor = color;
+    this.tagText = name;
+    this.tag.set(name, this.tagColor);
   }
+
+  /** Letrero con un ícono delante del nombre (💫 botado, 🔊 hablando) o solo el nombre. */
+  setTagIcon(icon: string | null) {
+    const text = icon ? `${icon} ${this.name}` : this.name;
+    if (text === this.tagText) return;
+    this.tagText = text;
+    this.tag.set(text, this.tagColor);
+  }
+
+  private tagText = '';
 
   /** Saca un volantín nuevo (o el guardado) y lo encumbra a favor del viento. */
   launch(windX: number, windZ: number) {
