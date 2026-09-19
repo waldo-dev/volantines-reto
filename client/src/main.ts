@@ -62,6 +62,20 @@ const WALK_WITH_KITE = 3.5;
 const RUN_FREE = 6;
 const REPORT_EVERY = 15;
 
+// --- Sin zoom en móvil: iOS ignora user-scalable=no, así que se bloquean los gestos a mano ---
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend', 'dblclick']) {
+  document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+}
+document.addEventListener(
+  'touchmove',
+  (e) => {
+    // `scale` solo existe en iOS; en Android el pellizco ya lo frena user-scalable=no
+    const scale = (e as TouchEvent & { scale?: number }).scale;
+    if (scale !== undefined && scale !== 1) e.preventDefault();
+  },
+  { passive: false },
+);
+
 // --- Render ---
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const isMobile = window.matchMedia('(pointer: coarse)').matches;
